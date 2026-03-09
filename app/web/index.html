@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Family Tree MVP</title>
+    <style>
+      :root {
+        --bg: #f9f8f2;
+        --panel: #fffef9;
+        --ink: #1f2937;
+        --muted: #6b7280;
+        --accent: #0f766e;
+        --line: #d1d5db;
+      }
+      body {
+        margin: 0;
+        font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+        color: var(--ink);
+        background: radial-gradient(circle at top left, #eef8f6, var(--bg) 40%);
+      }
+      .app {
+        max-width: 1000px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+      h1 { margin-top: 0; }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 16px;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 12px;
+      }
+      label {
+        display: block;
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+      input, select, button {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 8px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        margin-bottom: 8px;
+      }
+      button {
+        border: none;
+        background: var(--accent);
+        color: white;
+        cursor: pointer;
+        font-weight: 600;
+      }
+      .list {
+        max-height: 180px;
+        overflow: auto;
+        border: 1px dashed var(--line);
+        border-radius: 8px;
+        padding: 8px;
+      }
+      .item {
+        font-size: 14px;
+        padding: 6px 0;
+        border-bottom: 1px dotted var(--line);
+      }
+      .item:last-child { border-bottom: none; }
+      .meta {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .status {
+        color: var(--accent);
+        font-size: 13px;
+        min-height: 20px;
+      }
+      @media (max-width: 640px) {
+        .app { padding: 12px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script>
+      const { useEffect, useMemo, useState } = React;
+      const API = "";
+
+      function App() {
+        const [circles, setCircles] = useState([]);
+        const [persons, setPersons] = useState([]);
+        const [relationships, setRelationships] = useState([]);
+        const [selectedCircle, setSelectedCircle] = useState("");
+        const [status, setStatus] = useState("");
+        const [subgraph, setSubgraph] = useState(null);
+
+        const selectedPersonOptions = useMemo(
+          () => persons.map((p) => ({ value: p.id, label: p.full_name })),
+          [persons]
+        );
+
+        async function loadCircles() {
+          const res = await fetch(`${API}/circles`);
+          const data = await res.json();
+          setCircles(data);
+          if (!selectedCircle && data.length > 0) {
+            setSelectedCircle(data[0].id);
+          }
+        }
+
+        async function loadGraphData(circleId) {
+          if (!circleId) {
+            setPersons([]);
+            setRelationships([]);
+            return;
+          }
+          const [personsRes, relRes] = await Promise.all([
+            fetch(`${API}/circles/${circleId}/persons`),
+            fetch(`${API}/circles/${circleId}/relationships`)
+          ]);
+          setPersons(await personsRes.json());
+          setRelationships(await relRes.json());
+        }
+
+        useEffect(() => { loadCircles(); }, []);
+        useEffect(() => { loadGraphData(selectedCircle); }, [selectedCircle]);
+
+        async function createCircle(e) {
+          e.preventDefault();
+          const name = e.target.name.value.trim();
+          if (!name) return;
+          const res = await fetch(`${API}/circles`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name }),
+          });
+          if (!res.ok) return setStatus("Failed to create circle");
+          setStatus("Circle created");
+          e.target.reset();
+          await loadCircles();
+        }
+
+        async function createPerson(e) {
+          e.preventDefault();
+          if (!selectedCircle) return;
+          const full_name = e.target.full_name.value.trim();
+          const religion = e.target.religion.value.trim();
+          if (!full_name) return;
+          const res = await fetch(`${API}/circles/${selectedCircle}/persons`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ full_name, religion: religion || null }),
+          });
+          if (!res.ok) return setStatus("Failed to create person");
+          setStatus("Person created");
+          e.target.reset();
+          await loadGraphData(selectedCircle);
+        }
+
+        async function createRelationship(e) {
+          e.preventDefault();
+          if (!selectedCircle) return;
+          const from_person_id = e.target.from_person_id.value;
+          const to_person_id = e.target.to_person_id.value;
+          const relationship_type = e.target.relationship_type.value.trim();
+          const res = await fetch(`${API}/circles/${selectedCircle}/relationships`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ from_person_id, to_person_id, relationship_type }),
+          });
+          if (!res.ok) return setStatus("Failed to create relationship");
+          setStatus("Relationship created");
+          e.target.reset();
+          await loadGraphData(selectedCircle);
+        }
+
+        async function loadSubgraph(e) {
+          e.preventDefault();
+          if (!selectedCircle) return;
+          const root = e.target.root_person_id.value;
+          const direction = e.target.direction.value;
+          const depth = e.target.depth.value;
+          const res = await fetch(
+            `${API}/circles/${selectedCircle}/graph/subgraph?root_person_id=${root}&direction=${direction}&depth=${depth}`
+          );
+          if (!res.ok) return setStatus("Failed to load subgraph");
+          const data = await res.json();
+          setSubgraph(data);
+          setStatus(`Loaded ${data.persons.length} people in subgraph`);
+        }
+
+        return React.createElement("div", { className: "app" }, [
+          React.createElement("h1", { key: "h1" }, "Family Tree MVP"),
+          React.createElement("div", { className: "status", key: "status" }, status),
+          React.createElement("div", { className: "grid", key: "grid" }, [
+            React.createElement("form", { className: "card", onSubmit: createCircle, key: "circle" }, [
+              React.createElement("h3", { key: "title" }, "Create Circle"),
+              React.createElement("label", { key: "l1" }, "Circle Name"),
+              React.createElement("input", { name: "name", key: "i1", required: true }),
+              React.createElement("button", { key: "b1", type: "submit" }, "Create"),
+              React.createElement("label", { key: "l2" }, "Active Circle"),
+              React.createElement(
+                "select",
+                { value: selectedCircle, onChange: (e) => setSelectedCircle(e.target.value), key: "s1" },
+                [React.createElement("option", { key: "blank", value: "" }, "Select")]
+                  .concat(circles.map((c) =>
+                    React.createElement("option", { value: c.id, key: c.id }, c.name)
+                  ))
+              )
+            ]),
+            React.createElement("form", { className: "card", onSubmit: createPerson, key: "person" }, [
+              React.createElement("h3", { key: "title" }, "Add Person"),
+              React.createElement("label", { key: "l1" }, "Full Name"),
+              React.createElement("input", { name: "full_name", required: true, key: "i1" }),
+              React.createElement("label", { key: "l2" }, "Religion"),
+              React.createElement("input", { name: "religion", key: "i2" }),
+              React.createElement("button", { key: "b1", type: "submit", disabled: !selectedCircle }, "Add")
+            ]),
+            React.createElement("form", { className: "card", onSubmit: createRelationship, key: "rel" }, [
+              React.createElement("h3", { key: "title" }, "Add Relationship"),
+              React.createElement("label", { key: "l1" }, "From Person"),
+              React.createElement(
+                "select",
+                { name: "from_person_id", required: true, key: "s1" },
+                selectedPersonOptions.map((p) =>
+                  React.createElement("option", { key: p.value, value: p.value }, p.label)
+                )
+              ),
+              React.createElement("label", { key: "l2" }, "To Person"),
+              React.createElement(
+                "select",
+                { name: "to_person_id", required: true, key: "s2" },
+                selectedPersonOptions.map((p) =>
+                  React.createElement("option", { key: p.value, value: p.value }, p.label)
+                )
+              ),
+              React.createElement("label", { key: "l3" }, "Relationship Type"),
+              React.createElement("input", { name: "relationship_type", placeholder: "parent_of", required: true, key: "i1" }),
+              React.createElement("button", { key: "b1", type: "submit", disabled: selectedPersonOptions.length < 2 }, "Link")
+            ]),
+            React.createElement("form", { className: "card", onSubmit: loadSubgraph, key: "sub" }, [
+              React.createElement("h3", { key: "title" }, "Load Subgraph"),
+              React.createElement(
+                "select",
+                { name: "root_person_id", required: true, key: "s1" },
+                selectedPersonOptions.map((p) =>
+                  React.createElement("option", { key: p.value, value: p.value }, p.label)
+                )
+              ),
+              React.createElement(
+                "select",
+                { name: "direction", key: "s2" },
+                [
+                  React.createElement("option", { key: "anc", value: "ancestors" }, "Ancestors"),
+                  React.createElement("option", { key: "des", value: "descendants" }, "Descendants")
+                ]
+              ),
+              React.createElement("input", { name: "depth", type: "number", defaultValue: 2, min: 1, max: 10, key: "i1" }),
+              React.createElement("button", { key: "b1", type: "submit", disabled: selectedPersonOptions.length === 0 }, "View")
+            ])
+          ]),
+          React.createElement("div", { className: "grid", key: "lists" }, [
+            React.createElement("div", { className: "card", key: "p" }, [
+              React.createElement("h3", { key: "h" }, `Persons (${persons.length})`),
+              React.createElement("div", { className: "list", key: "l" }, persons.map((p) =>
+                React.createElement("div", { className: "item", key: p.id }, [
+                  React.createElement("div", { key: "n" }, p.full_name),
+                  React.createElement("div", { className: "meta", key: "m" }, `${p.religion || "N/A"} • ${p.id.slice(0, 8)}`)
+                ])
+              ))
+            ]),
+            React.createElement("div", { className: "card", key: "r" }, [
+              React.createElement("h3", { key: "h" }, `Relationships (${relationships.length})`),
+              React.createElement("div", { className: "list", key: "l" }, relationships.map((r) =>
+                React.createElement("div", { className: "item", key: r.id }, [
+                  React.createElement("div", { key: "t" }, r.relationship_type),
+                  React.createElement("div", { className: "meta", key: "m" }, `${r.from_person_id.slice(0, 8)} -> ${r.to_person_id.slice(0, 8)}`)
+                ])
+              ))
+            ]),
+            React.createElement("div", { className: "card", key: "sg" }, [
+              React.createElement("h3", { key: "h" }, "Subgraph"),
+              React.createElement("div", { className: "list", key: "l" },
+                !subgraph
+                  ? "No subgraph loaded yet"
+                  : [
+                      React.createElement("div", { className: "item", key: "p" }, `People: ${subgraph.persons.length}`),
+                      React.createElement("div", { className: "item", key: "r" }, `Edges: ${subgraph.relationships.length}`)
+                    ]
+              )
+            ])
+          ])
+        ]);
+      }
+
+      ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+    </script>
+  </body>
+  </html>
