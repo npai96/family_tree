@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from collections import deque
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -16,6 +18,7 @@ from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 DB_PATH = BASE_DIR / "app" / "api" / "mvp.db"
+WEB_INDEX_PATH = BASE_DIR / "app" / "web" / "index.html"
 
 
 def utc_now() -> str:
@@ -35,10 +38,26 @@ def init_db() -> None:
             """
             PRAGMA foreign_keys = ON;
 
+            CREATE TABLE IF NOT EXISTS users (
+              id TEXT PRIMARY KEY,
+              display_name TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS circles (
               id TEXT PRIMARY KEY,
               name TEXT NOT NULL,
               created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS circle_memberships (
+              circle_id TEXT NOT NULL,
+              user_id TEXT NOT NULL,
+              role TEXT NOT NULL CHECK (role IN ('owner', 'editor', 'viewer')),
+              created_at TEXT NOT NULL,
+              PRIMARY KEY (circle_id, user_id),
+              FOREIGN KEY (circle_id) REFERENCES circles(id) ON DELETE CASCADE,
+              FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
 
             CREATE TABLE IF NOT EXISTS persons (
@@ -73,8 +92,51 @@ def init_db() -> None:
               FOREIGN KEY (from_person_id) REFERENCES persons(id) ON DELETE CASCADE,
               FOREIGN KEY (to_person_id) REFERENCES persons(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS change_requests (
+              id TEXT PRIMARY KEY,
+              circle_id TEXT NOT NULL,
+              entity_type TEXT NOT NULL,
+              entity_id TEXT NOT NULL,
+              proposed_patch_json TEXT NOT NULL,
+              status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected')),
+              proposed_by TEXT NOT NULL,
+              reviewed_by TEXT,
+              review_comment TEXT,
+              created_at TEXT NOT NULL,
+              reviewed_at TEXT,
+              FOREIGN KEY (circle_id) REFERENCES circles(id) ON DELETE CASCADE,
+              FOREIGN KEY (proposed_by) REFERENCES users(id) ON DELETE CASCADE,
+              FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL
+            );
             """
         )
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="Family Tree MVP API", version="0.2.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class UserCreate(BaseModel):
+    display_name: str = Field(min_length=1, max_length=120)
+
+
+class UserOut(BaseModel):
+    id: str
+    display_name: str
+    created_at: str
 
 
 class CircleCreate(BaseModel):
@@ -85,6 +147,18 @@ class CircleOut(BaseModel):
     id: str
     name: str
     created_at: str
+
+
+class CircleMembershipOut(BaseModel):
+    circle_id: str
+    user_id: str
+    role: Literal["owner", "editor", "viewer"]
+    created_at: str
+
+
+class CircleMembershipCreate(BaseModel):
+    user_id: str
+    role: Literal["editor", "viewer"]
 
 
 class PersonCreate(BaseModel):
@@ -123,6 +197,30 @@ class RelationshipOut(BaseModel):
     created_at: str
 
 
+class ChangeRequestCreate(BaseModel):
+    entity_type: Literal["person"]
+    entity_id: str
+    proposed_patch_json: dict[str, Any]
+
+
+class ChangeRequestReview(BaseModel):
+    review_comment: Optional[str] = None
+
+
+class ChangeRequestOut(BaseModel):
+    id: str
+    circle_id: str
+    entity_type: str
+    entity_id: str
+    proposed_patch_json: str
+    status: Literal["pending", "approved", "rejected"]
+    proposed_by: str
+    reviewed_by: Optional[str] = None
+    review_comment: Optional[str] = None
+    created_at: str
+    reviewed_at: Optional[str] = None
+
+
 class SubgraphOut(BaseModel):
     persons: list[PersonOut]
     relationships: list[RelationshipOut]
@@ -130,26 +228,111 @@ class SubgraphOut(BaseModel):
 
 @dataclass
 class Edge:
+    edge_id: str
     from_person_id: str
     to_person_id: str
     relationship_type: str
+    created_at: str
 
 
-app = FastAPI(title="Family Tree MVP API", version="0.1.0")
-WEB_INDEX_PATH = BASE_DIR / "app" / "web" / "index.html"
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+def _require_user(conn: sqlite3.Connection, user_id: Optional[str]) -> str:
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Missing X-User-Id header")
+    row = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=401, detail="Invalid X-User-Id")
+    return user_id
 
 
-@app.on_event("startup")
-def on_startup() -> None:
-    init_db()
+def _get_role(conn: sqlite3.Connection, circle_id: str, user_id: str) -> str:
+    row = conn.execute(
+        "SELECT role FROM circle_memberships WHERE circle_id = ? AND user_id = ?",
+        (circle_id, user_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=403, detail="Not a member of this circle")
+    return str(row["role"])
+
+
+def _require_circle_role(conn: sqlite3.Connection, circle_id: str, user_id: str, allowed_roles: set[str]) -> str:
+    role = _get_role(conn, circle_id, user_id)
+    if role not in allowed_roles:
+        raise HTTPException(status_code=403, detail="Insufficient role for this action")
+    return role
+
+
+def _safe_person_patch(patch: dict[str, Any]) -> tuple[str, list[Any]]:
+    allowed_keys = {
+        "full_name",
+        "religion",
+        "sex",
+        "birth_date",
+        "death_date",
+        "birth_place",
+        "occupation",
+        "hobbies",
+        "personality",
+        "medical_notes",
+        "bio_text",
+    }
+    keys = [k for k in patch.keys() if k in allowed_keys]
+    if not keys:
+        raise HTTPException(status_code=400, detail="No valid person fields to update")
+    set_clause = ", ".join(f"{k} = ?" for k in keys) + ", updated_at = ?"
+    values = [patch[k] for k in keys]
+    values.append(utc_now())
+    return set_clause, values
+
+
+def _load_edges(circle_id: str, direction: str) -> dict[str, list[Edge]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, from_person_id, to_person_id, relationship_type, created_at
+            FROM relationships
+            WHERE circle_id = ?
+            """,
+            (circle_id,),
+        ).fetchall()
+
+    adjacency: dict[str, list[Edge]] = {}
+    for row in rows:
+        edge = Edge(
+            edge_id=row["id"],
+            from_person_id=row["from_person_id"],
+            to_person_id=row["to_person_id"],
+            relationship_type=row["relationship_type"],
+            created_at=row["created_at"],
+        )
+        if direction == "descendants":
+            adjacency.setdefault(edge.from_person_id, []).append(edge)
+        else:
+            reversed_edge = Edge(
+                edge_id=f"reverse:{edge.edge_id}",
+                from_person_id=edge.to_person_id,
+                to_person_id=edge.from_person_id,
+                relationship_type=edge.relationship_type,
+                created_at=edge.created_at,
+            )
+            adjacency.setdefault(reversed_edge.from_person_id, []).append(reversed_edge)
+    return adjacency
+
+
+def _traverse(root_person_id: str, adjacency: dict[str, list[Edge]], max_depth: int) -> tuple[set[str], dict[str, Edge]]:
+    seen: set[str] = {root_person_id}
+    seen_edges: dict[str, Edge] = {}
+    queue: deque[tuple[str, int]] = deque([(root_person_id, 0)])
+
+    while queue:
+        node, depth = queue.popleft()
+        if depth >= max_depth:
+            continue
+        for edge in adjacency.get(node, []):
+            seen_edges[edge.edge_id] = edge
+            if edge.to_person_id not in seen:
+                seen.add(edge.to_person_id)
+                queue.append((edge.to_person_id, depth + 1))
+    return seen, seen_edges
 
 
 @app.get("/health")
@@ -162,34 +345,122 @@ def web_app() -> FileResponse:
     return FileResponse(WEB_INDEX_PATH)
 
 
-@app.post("/circles", response_model=CircleOut)
-def create_circle(payload: CircleCreate) -> CircleOut:
-    circle_id = str(uuid4())
+@app.post("/users", response_model=UserOut)
+def create_user(payload: UserCreate) -> UserOut:
+    user_id = str(uuid4())
     now = utc_now()
     with get_conn() as conn:
         conn.execute(
+            "INSERT INTO users (id, display_name, created_at) VALUES (?, ?, ?)",
+            (user_id, payload.display_name.strip(), now),
+        )
+    return UserOut(id=user_id, display_name=payload.display_name.strip(), created_at=now)
+
+
+@app.get("/users", response_model=list[UserOut])
+def list_users() -> list[UserOut]:
+    with get_conn() as conn:
+        rows = conn.execute("SELECT id, display_name, created_at FROM users ORDER BY created_at DESC").fetchall()
+    return [UserOut(**dict(row)) for row in rows]
+
+
+@app.post("/circles", response_model=CircleOut)
+def create_circle(payload: CircleCreate, x_user_id: Optional[str] = Header(default=None)) -> CircleOut:
+    circle_id = str(uuid4())
+    now = utc_now()
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        conn.execute(
             "INSERT INTO circles (id, name, created_at) VALUES (?, ?, ?)",
             (circle_id, payload.name.strip(), now),
+        )
+        conn.execute(
+            "INSERT INTO circle_memberships (circle_id, user_id, role, created_at) VALUES (?, ?, 'owner', ?)",
+            (circle_id, actor_user_id, now),
         )
     return CircleOut(id=circle_id, name=payload.name.strip(), created_at=now)
 
 
 @app.get("/circles", response_model=list[CircleOut])
-def list_circles() -> list[CircleOut]:
+def list_circles(x_user_id: Optional[str] = Header(default=None)) -> list[CircleOut]:
     with get_conn() as conn:
-        rows = conn.execute("SELECT id, name, created_at FROM circles ORDER BY created_at DESC").fetchall()
-    return [CircleOut(**dict(r)) for r in rows]
+        actor_user_id = _require_user(conn, x_user_id)
+        rows = conn.execute(
+            """
+            SELECT c.id, c.name, c.created_at
+            FROM circles c
+            INNER JOIN circle_memberships m ON m.circle_id = c.id
+            WHERE m.user_id = ?
+            ORDER BY c.created_at DESC
+            """,
+            (actor_user_id,),
+        ).fetchall()
+    return [CircleOut(**dict(row)) for row in rows]
+
+
+@app.get("/circles/{circle_id}/members", response_model=list[CircleMembershipOut])
+def list_members(circle_id: str, x_user_id: Optional[str] = Header(default=None)) -> list[CircleMembershipOut]:
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _get_role(conn, circle_id, actor_user_id)
+        rows = conn.execute(
+            "SELECT circle_id, user_id, role, created_at FROM circle_memberships WHERE circle_id = ? ORDER BY created_at",
+            (circle_id,),
+        ).fetchall()
+    return [CircleMembershipOut(**dict(row)) for row in rows]
+
+
+@app.post("/circles/{circle_id}/members", response_model=CircleMembershipOut)
+def add_member(circle_id: str, payload: CircleMembershipCreate, x_user_id: Optional[str] = Header(default=None)) -> CircleMembershipOut:
+    now = utc_now()
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _require_circle_role(conn, circle_id, actor_user_id, {"owner"})
+        _require_user(conn, payload.user_id)
+        existing = conn.execute(
+            """
+            SELECT circle_id, user_id, role, created_at
+            FROM circle_memberships
+            WHERE circle_id = ? AND user_id = ?
+            """,
+            (circle_id, payload.user_id),
+        ).fetchone()
+        if existing:
+            if existing["role"] == "owner":
+                raise HTTPException(status_code=409, detail="Owner role cannot be changed via this endpoint")
+            if existing["role"] != payload.role:
+                conn.execute(
+                    """
+                    UPDATE circle_memberships
+                    SET role = ?
+                    WHERE circle_id = ? AND user_id = ?
+                    """,
+                    (payload.role, circle_id, payload.user_id),
+                )
+                existing = conn.execute(
+                    """
+                    SELECT circle_id, user_id, role, created_at
+                    FROM circle_memberships
+                    WHERE circle_id = ? AND user_id = ?
+                    """,
+                    (circle_id, payload.user_id),
+                ).fetchone()
+            return CircleMembershipOut(**dict(existing))
+
+        conn.execute(
+            "INSERT INTO circle_memberships (circle_id, user_id, role, created_at) VALUES (?, ?, ?, ?)",
+            (circle_id, payload.user_id, payload.role, now),
+        )
+    return CircleMembershipOut(circle_id=circle_id, user_id=payload.user_id, role=payload.role, created_at=now)
 
 
 @app.post("/circles/{circle_id}/persons", response_model=PersonOut)
-def create_person(circle_id: str, payload: PersonCreate) -> PersonOut:
+def create_person(circle_id: str, payload: PersonCreate, x_user_id: Optional[str] = Header(default=None)) -> PersonOut:
     person_id = str(uuid4())
     now = utc_now()
     with get_conn() as conn:
-        circle = conn.execute("SELECT id FROM circles WHERE id = ?", (circle_id,)).fetchone()
-        if not circle:
-            raise HTTPException(status_code=404, detail="Circle not found")
-
+        actor_user_id = _require_user(conn, x_user_id)
+        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
         conn.execute(
             """
             INSERT INTO persons (
@@ -220,28 +491,30 @@ def create_person(circle_id: str, payload: PersonCreate) -> PersonOut:
 
 
 @app.get("/circles/{circle_id}/persons", response_model=list[PersonOut])
-def list_persons(circle_id: str) -> list[PersonOut]:
+def list_persons(circle_id: str, x_user_id: Optional[str] = Header(default=None)) -> list[PersonOut]:
     with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _get_role(conn, circle_id, actor_user_id)
         rows = conn.execute(
             "SELECT * FROM persons WHERE circle_id = ? ORDER BY created_at DESC",
             (circle_id,),
         ).fetchall()
-    return [PersonOut(**dict(r)) for r in rows]
+    return [PersonOut(**dict(row)) for row in rows]
 
 
 @app.post("/circles/{circle_id}/relationships", response_model=RelationshipOut)
-def create_relationship(circle_id: str, payload: RelationshipCreate) -> RelationshipOut:
+def create_relationship(circle_id: str, payload: RelationshipCreate, x_user_id: Optional[str] = Header(default=None)) -> RelationshipOut:
     rel_id = str(uuid4())
     now = utc_now()
-
     with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
         person_rows = conn.execute(
             "SELECT id FROM persons WHERE circle_id = ? AND id IN (?, ?)",
             (circle_id, payload.from_person_id, payload.to_person_id),
         ).fetchall()
         if len(person_rows) != 2:
             raise HTTPException(status_code=400, detail="Both persons must exist in circle")
-
         try:
             conn.execute(
                 """
@@ -265,61 +538,15 @@ def create_relationship(circle_id: str, payload: RelationshipCreate) -> Relation
 
 
 @app.get("/circles/{circle_id}/relationships", response_model=list[RelationshipOut])
-def list_relationships(circle_id: str) -> list[RelationshipOut]:
+def list_relationships(circle_id: str, x_user_id: Optional[str] = Header(default=None)) -> list[RelationshipOut]:
     with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _get_role(conn, circle_id, actor_user_id)
         rows = conn.execute(
             "SELECT * FROM relationships WHERE circle_id = ? ORDER BY created_at DESC",
             (circle_id,),
         ).fetchall()
-    return [RelationshipOut(**dict(r)) for r in rows]
-
-
-def _load_edges(circle_id: str, direction: str) -> dict[str, list[Edge]]:
-    with get_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT from_person_id, to_person_id, relationship_type
-            FROM relationships
-            WHERE circle_id = ?
-            """,
-            (circle_id,),
-        ).fetchall()
-
-    adjacency: dict[str, list[Edge]] = {}
-    for row in rows:
-        edge = Edge(
-            from_person_id=row["from_person_id"],
-            to_person_id=row["to_person_id"],
-            relationship_type=row["relationship_type"],
-        )
-        if direction == "descendants":
-            adjacency.setdefault(edge.from_person_id, []).append(edge)
-        else:
-            reversed_edge = Edge(
-                from_person_id=edge.to_person_id,
-                to_person_id=edge.from_person_id,
-                relationship_type=edge.relationship_type,
-            )
-            adjacency.setdefault(reversed_edge.from_person_id, []).append(reversed_edge)
-    return adjacency
-
-
-def _traverse(root_person_id: str, adjacency: dict[str, list[Edge]], max_depth: int) -> tuple[set[str], set[tuple[str, str, str]]]:
-    seen: set[str] = {root_person_id}
-    seen_edges: set[tuple[str, str, str]] = set()
-    queue: deque[tuple[str, int]] = deque([(root_person_id, 0)])
-
-    while queue:
-        node, depth = queue.popleft()
-        if depth >= max_depth:
-            continue
-        for edge in adjacency.get(node, []):
-            seen_edges.add((edge.from_person_id, edge.to_person_id, edge.relationship_type))
-            if edge.to_person_id not in seen:
-                seen.add(edge.to_person_id)
-                queue.append((edge.to_person_id, depth + 1))
-
-    return seen, seen_edges
+    return [RelationshipOut(**dict(row)) for row in rows]
 
 
 @app.get("/circles/{circle_id}/graph/subgraph", response_model=SubgraphOut)
@@ -328,7 +555,18 @@ def get_subgraph(
     root_person_id: str = Query(...),
     direction: Literal["ancestors", "descendants"] = Query(...),
     depth: int = Query(2, ge=1, le=10),
+    x_user_id: Optional[str] = Header(default=None),
 ) -> SubgraphOut:
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _get_role(conn, circle_id, actor_user_id)
+        root_exists = conn.execute(
+            "SELECT id FROM persons WHERE id = ? AND circle_id = ?",
+            (root_person_id, circle_id),
+        ).fetchone()
+        if not root_exists:
+            raise HTTPException(status_code=404, detail="Root person not found in circle")
+
     adjacency = _load_edges(circle_id, direction)
     seen_person_ids, seen_edges = _traverse(root_person_id, adjacency, depth)
 
@@ -342,13 +580,138 @@ def get_subgraph(
     persons = [PersonOut(**dict(row)) for row in person_rows]
     rels = [
         RelationshipOut(
-            id=str(uuid4()),
+            id=edge.edge_id,
             circle_id=circle_id,
-            from_person_id=e[0],
-            to_person_id=e[1],
-            relationship_type=e[2],
-            created_at=utc_now(),
+            from_person_id=edge.from_person_id,
+            to_person_id=edge.to_person_id,
+            relationship_type=edge.relationship_type,
+            created_at=edge.created_at,
         )
-        for e in sorted(seen_edges)
+        for edge in seen_edges.values()
     ]
     return SubgraphOut(persons=persons, relationships=rels)
+
+
+@app.post("/circles/{circle_id}/change-requests", response_model=ChangeRequestOut)
+def create_change_request(
+    circle_id: str,
+    payload: ChangeRequestCreate,
+    x_user_id: Optional[str] = Header(default=None),
+) -> ChangeRequestOut:
+    cr_id = str(uuid4())
+    now = utc_now()
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _get_role(conn, circle_id, actor_user_id)
+        if payload.entity_type == "person":
+            row = conn.execute(
+                "SELECT id FROM persons WHERE id = ? AND circle_id = ?",
+                (payload.entity_id, circle_id),
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Target person not found in circle")
+        conn.execute(
+            """
+            INSERT INTO change_requests (
+              id, circle_id, entity_type, entity_id, proposed_patch_json, status, proposed_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+            """,
+            (
+                cr_id,
+                circle_id,
+                payload.entity_type,
+                payload.entity_id,
+                json.dumps(payload.proposed_patch_json),
+                actor_user_id,
+                now,
+            ),
+        )
+        out = conn.execute("SELECT * FROM change_requests WHERE id = ?", (cr_id,)).fetchone()
+    return ChangeRequestOut(**dict(out))
+
+
+@app.get("/circles/{circle_id}/change-requests", response_model=list[ChangeRequestOut])
+def list_change_requests(circle_id: str, x_user_id: Optional[str] = Header(default=None)) -> list[ChangeRequestOut]:
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _get_role(conn, circle_id, actor_user_id)
+        rows = conn.execute(
+            """
+            SELECT * FROM change_requests
+            WHERE circle_id = ?
+            ORDER BY created_at DESC
+            """,
+            (circle_id,),
+        ).fetchall()
+    return [ChangeRequestOut(**dict(row)) for row in rows]
+
+
+@app.post("/circles/{circle_id}/change-requests/{change_request_id}/approve", response_model=ChangeRequestOut)
+def approve_change_request(
+    circle_id: str,
+    change_request_id: str,
+    payload: ChangeRequestReview,
+    x_user_id: Optional[str] = Header(default=None),
+) -> ChangeRequestOut:
+    reviewed_at = utc_now()
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        row = conn.execute(
+            "SELECT * FROM change_requests WHERE id = ? AND circle_id = ?",
+            (change_request_id, circle_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Change request not found")
+        if row["status"] != "pending":
+            raise HTTPException(status_code=409, detail="Change request already reviewed")
+        if row["entity_type"] != "person":
+            raise HTTPException(status_code=400, detail="Unsupported entity type")
+
+        proposed_patch = json.loads(row["proposed_patch_json"])
+        set_clause, values = _safe_person_patch(proposed_patch)
+        conn.execute(
+            f"UPDATE persons SET {set_clause} WHERE id = ? AND circle_id = ?",
+            (*values, row["entity_id"], circle_id),
+        )
+        conn.execute(
+            """
+            UPDATE change_requests
+            SET status = 'approved', reviewed_by = ?, review_comment = ?, reviewed_at = ?
+            WHERE id = ?
+            """,
+            (actor_user_id, payload.review_comment, reviewed_at, change_request_id),
+        )
+        out = conn.execute("SELECT * FROM change_requests WHERE id = ?", (change_request_id,)).fetchone()
+    return ChangeRequestOut(**dict(out))
+
+
+@app.post("/circles/{circle_id}/change-requests/{change_request_id}/reject", response_model=ChangeRequestOut)
+def reject_change_request(
+    circle_id: str,
+    change_request_id: str,
+    payload: ChangeRequestReview,
+    x_user_id: Optional[str] = Header(default=None),
+) -> ChangeRequestOut:
+    reviewed_at = utc_now()
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        row = conn.execute(
+            "SELECT * FROM change_requests WHERE id = ? AND circle_id = ?",
+            (change_request_id, circle_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Change request not found")
+        if row["status"] != "pending":
+            raise HTTPException(status_code=409, detail="Change request already reviewed")
+        conn.execute(
+            """
+            UPDATE change_requests
+            SET status = 'rejected', reviewed_by = ?, review_comment = ?, reviewed_at = ?
+            WHERE id = ?
+            """,
+            (actor_user_id, payload.review_comment, reviewed_at, change_request_id),
+        )
+        out = conn.execute("SELECT * FROM change_requests WHERE id = ?", (change_request_id,)).fetchone()
+    return ChangeRequestOut(**dict(out))

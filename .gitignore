@@ -6,3 +6,4 @@ build/
 .env.*
 *.log
 .venv/
+app/api/mvp.db
