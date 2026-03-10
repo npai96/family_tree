@@ -151,3 +151,60 @@ def test_add_member_is_idempotent_and_can_update_non_owner_role(tmp_path: Path) 
     )
     assert update_role.status_code == 200
     assert update_role.json()["role"] == "viewer"
+
+
+def test_context_events_and_person_timeline(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    owner_id = create_user(client, "Owner")
+    editor_id = create_user(client, "Editor")
+
+    circle = client.post("/circles", json={"name": "Context Family"}, headers={"X-User-Id": owner_id})
+    circle_id = circle.json()["id"]
+
+    add_editor = client.post(
+        f"/circles/{circle_id}/members",
+        json={"user_id": editor_id, "role": "editor"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert add_editor.status_code == 200
+
+    person = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Ravi Kumar", "birth_date": "1950-01-01", "birth_place": "Chennai"},
+        headers={"X-User-Id": editor_id},
+    )
+    assert person.status_code == 200
+    person_id = person.json()["id"]
+
+    event = client.post(
+        f"/circles/{circle_id}/context-events",
+        json={
+            "date": "1971-12-16",
+            "title": "South Asia geopolitical turning point",
+            "event_type": "political",
+            "location_name": "South Asia",
+            "description": "A major historical shift in the region",
+        },
+        headers={"X-User-Id": editor_id},
+    )
+    assert event.status_code == 200
+    event_id = event.json()["id"]
+
+    link = client.post(
+        f"/circles/{circle_id}/persons/{person_id}/context-links",
+        json={"context_event_id": event_id, "relevance_note": "He discussed this often"},
+        headers={"X-User-Id": editor_id},
+    )
+    assert link.status_code == 200
+
+    timeline = client.get(
+        f"/circles/{circle_id}/persons/{person_id}/timeline",
+        headers={"X-User-Id": owner_id},
+    )
+    assert timeline.status_code == 200
+    body = timeline.json()
+    assert len(body) == 2
+    assert body[0]["date"] == "1950-01-01"
+    assert body[0]["kind"] == "life"
+    assert body[1]["date"] == "1971-12-16"
+    assert body[1]["kind"] == "context"

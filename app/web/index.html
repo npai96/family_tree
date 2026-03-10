@@ -234,6 +234,8 @@
         const [persons, setPersons] = useState([]);
         const [relationships, setRelationships] = useState([]);
         const [changeRequests, setChangeRequests] = useState([]);
+        const [contextEvents, setContextEvents] = useState([]);
+        const [timeline, setTimeline] = useState([]);
         const [subgraph, setSubgraph] = useState(null);
         const [lastRoot, setLastRoot] = useState("");
         const [status, setStatus] = useState("");
@@ -274,19 +276,21 @@
 
         async function loadCircleData(circleId) {
           if (!activeUserId || !circleId) {
-            setMembers([]); setPersons([]); setRelationships([]); setChangeRequests([]);
+            setMembers([]); setPersons([]); setRelationships([]); setChangeRequests([]); setContextEvents([]); setTimeline([]);
             return;
           }
-          const [m, p, r, cr] = await Promise.all([
+          const [m, p, r, cr, ce] = await Promise.all([
             requestJson(`/circles/${circleId}/members`, { headers }),
             requestJson(`/circles/${circleId}/persons`, { headers }),
             requestJson(`/circles/${circleId}/relationships`, { headers }),
             requestJson(`/circles/${circleId}/change-requests`, { headers }),
+            requestJson(`/circles/${circleId}/context-events`, { headers }),
           ]);
           setMembers(m);
           setPersons(p);
           setRelationships(r);
           setChangeRequests(cr);
+          setContextEvents(ce);
         }
 
         useEffect(() => { loadUsers().catch((e) => setStatus(e.message)); }, []);
@@ -402,6 +406,45 @@
           });
           setStatus(`Change request ${action}`);
           await loadCircleData(selectedCircle);
+        }
+
+        async function createContextEvent(e) {
+          e.preventDefault();
+          await requestJson(`/circles/${selectedCircle}/context-events`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              date: e.target.date.value,
+              title: e.target.title.value.trim(),
+              event_type: e.target.event_type.value,
+              location_name: e.target.location_name.value.trim() || null,
+              description: e.target.description.value.trim() || null,
+            }),
+          });
+          setStatus("Context event created");
+          e.target.reset();
+          await loadCircleData(selectedCircle);
+        }
+
+        async function linkEventToPerson(e) {
+          e.preventDefault();
+          await requestJson(`/circles/${selectedCircle}/persons/${e.target.person_id.value}/context-links`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              context_event_id: e.target.context_event_id.value,
+              relevance_note: e.target.relevance_note.value.trim() || null,
+            }),
+          });
+          setStatus("Event linked to person");
+        }
+
+        async function loadTimeline(e) {
+          e.preventDefault();
+          const person_id = e.target.person_id.value;
+          const data = await requestJson(`/circles/${selectedCircle}/persons/${person_id}/timeline`, { headers });
+          setTimeline(data);
+          setStatus(`Timeline loaded: ${data.length} events`);
         }
 
         return React.createElement("div", { className: "app" }, [
@@ -532,7 +575,56 @@
               React.createElement("h3", { key: "h" }, "Graph Visualization"),
               React.createElement("div", { className: "muted", key: "m" }, "Directed subgraph from selected root"),
               React.createElement(GraphView, { key: "g", subgraph, rootPersonId: lastRoot }),
-            ])
+            ]),
+            React.createElement("form", { className: "card", onSubmit: (e) => createContextEvent(e).catch((x) => setStatus(x.message)), key: "context-events" }, [
+              React.createElement("h3", { key: "h" }, "Context Events"),
+              React.createElement("input", { key: "d", name: "date", type: "date", required: true }),
+              React.createElement("input", { key: "t", name: "title", required: true, placeholder: "Event title" }),
+              React.createElement(
+                "select",
+                { key: "et", name: "event_type" },
+                [
+                  React.createElement("option", { key: "world", value: "world" }, "world"),
+                  React.createElement("option", { key: "political", value: "political" }, "political"),
+                  React.createElement("option", { key: "social", value: "social" }, "social"),
+                  React.createElement("option", { key: "technology", value: "technology" }, "technology"),
+                  React.createElement("option", { key: "family", value: "family" }, "family"),
+                ]
+              ),
+              React.createElement("input", { key: "loc", name: "location_name", placeholder: "Location" }),
+              React.createElement("input", { key: "desc", name: "description", placeholder: "Description" }),
+              React.createElement("button", { key: "b1", type: "submit", disabled: !selectedCircle }, "Add Event"),
+              React.createElement("div", { className: "list", key: "list" }, contextEvents.map((ev) =>
+                React.createElement("div", { className: "item", key: ev.id }, `${ev.date} • ${ev.title}`)
+              )),
+            ]),
+            React.createElement("form", { className: "card", onSubmit: (e) => linkEventToPerson(e).catch((x) => setStatus(x.message)), key: "context-links" }, [
+              React.createElement("h3", { key: "h" }, "Link Event to Person"),
+              React.createElement(
+                "select",
+                { key: "p", name: "person_id" },
+                personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))
+              ),
+              React.createElement(
+                "select",
+                { key: "ce", name: "context_event_id" },
+                contextEvents.map((ev) => React.createElement("option", { key: ev.id, value: ev.id }, `${ev.date} ${ev.title}`))
+              ),
+              React.createElement("input", { key: "rn", name: "relevance_note", placeholder: "Relevance note" }),
+              React.createElement("button", { key: "b1", type: "submit", disabled: personOptions.length === 0 || contextEvents.length === 0 }, "Link"),
+            ]),
+            React.createElement("form", { className: "card", onSubmit: (e) => loadTimeline(e).catch((x) => setStatus(x.message)), key: "timeline" }, [
+              React.createElement("h3", { key: "h" }, "Person Timeline"),
+              React.createElement(
+                "select",
+                { key: "p", name: "person_id" },
+                personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))
+              ),
+              React.createElement("button", { key: "b1", type: "submit", disabled: personOptions.length === 0 }, "Load Timeline"),
+              React.createElement("div", { className: "list", key: "list" }, timeline.map((t, idx) =>
+                React.createElement("div", { className: "item", key: `${t.date}-${idx}` }, `${t.date} • ${t.kind} • ${t.title}`)
+              )),
+            ]),
           ]),
         ]);
       }

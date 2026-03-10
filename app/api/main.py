@@ -109,6 +109,34 @@ def init_db() -> None:
               FOREIGN KEY (proposed_by) REFERENCES users(id) ON DELETE CASCADE,
               FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL
             );
+
+            CREATE TABLE IF NOT EXISTS context_events (
+              id TEXT PRIMARY KEY,
+              circle_id TEXT NOT NULL,
+              date TEXT NOT NULL,
+              title TEXT NOT NULL,
+              event_type TEXT NOT NULL CHECK (event_type IN ('world', 'political', 'social', 'technology', 'family')),
+              location_name TEXT,
+              description TEXT,
+              created_by TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY (circle_id) REFERENCES circles(id) ON DELETE CASCADE,
+              FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS person_context_links (
+              person_id TEXT NOT NULL,
+              context_event_id TEXT NOT NULL,
+              circle_id TEXT NOT NULL,
+              relevance_note TEXT,
+              created_by TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              PRIMARY KEY (person_id, context_event_id),
+              FOREIGN KEY (person_id) REFERENCES persons(id) ON DELETE CASCADE,
+              FOREIGN KEY (context_event_id) REFERENCES context_events(id) ON DELETE CASCADE,
+              FOREIGN KEY (circle_id) REFERENCES circles(id) ON DELETE CASCADE,
+              FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+            );
             """
         )
 
@@ -219,6 +247,47 @@ class ChangeRequestOut(BaseModel):
     review_comment: Optional[str] = None
     created_at: str
     reviewed_at: Optional[str] = None
+
+
+class ContextEventCreate(BaseModel):
+    date: str
+    title: str = Field(min_length=1, max_length=200)
+    event_type: Literal["world", "political", "social", "technology", "family"]
+    location_name: Optional[str] = None
+    description: Optional[str] = None
+
+
+class ContextEventOut(BaseModel):
+    id: str
+    circle_id: str
+    date: str
+    title: str
+    event_type: str
+    location_name: Optional[str] = None
+    description: Optional[str] = None
+    created_by: str
+    created_at: str
+
+
+class PersonContextLinkCreate(BaseModel):
+    context_event_id: str
+    relevance_note: Optional[str] = None
+
+
+class PersonContextLinkOut(BaseModel):
+    person_id: str
+    context_event_id: str
+    circle_id: str
+    relevance_note: Optional[str] = None
+    created_by: str
+    created_at: str
+
+
+class TimelineItem(BaseModel):
+    date: str
+    kind: Literal["life", "context"]
+    title: str
+    detail: Optional[str] = None
 
 
 class SubgraphOut(BaseModel):
@@ -547,6 +616,181 @@ def list_relationships(circle_id: str, x_user_id: Optional[str] = Header(default
             (circle_id,),
         ).fetchall()
     return [RelationshipOut(**dict(row)) for row in rows]
+
+
+@app.post("/circles/{circle_id}/context-events", response_model=ContextEventOut)
+def create_context_event(
+    circle_id: str,
+    payload: ContextEventCreate,
+    x_user_id: Optional[str] = Header(default=None),
+) -> ContextEventOut:
+    event_id = str(uuid4())
+    now = utc_now()
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        conn.execute(
+            """
+            INSERT INTO context_events (
+              id, circle_id, date, title, event_type, location_name, description, created_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                circle_id,
+                payload.date,
+                payload.title.strip(),
+                payload.event_type,
+                payload.location_name,
+                payload.description,
+                actor_user_id,
+                now,
+            ),
+        )
+        row = conn.execute("SELECT * FROM context_events WHERE id = ?", (event_id,)).fetchone()
+    return ContextEventOut(**dict(row))
+
+
+@app.get("/circles/{circle_id}/context-events", response_model=list[ContextEventOut])
+def list_context_events(circle_id: str, x_user_id: Optional[str] = Header(default=None)) -> list[ContextEventOut]:
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _get_role(conn, circle_id, actor_user_id)
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM context_events
+            WHERE circle_id = ?
+            ORDER BY date ASC, created_at ASC
+            """,
+            (circle_id,),
+        ).fetchall()
+    return [ContextEventOut(**dict(row)) for row in rows]
+
+
+@app.post("/circles/{circle_id}/persons/{person_id}/context-links", response_model=PersonContextLinkOut)
+def link_context_event_to_person(
+    circle_id: str,
+    person_id: str,
+    payload: PersonContextLinkCreate,
+    x_user_id: Optional[str] = Header(default=None),
+) -> PersonContextLinkOut:
+    now = utc_now()
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+
+        person = conn.execute(
+            "SELECT id FROM persons WHERE id = ? AND circle_id = ?",
+            (person_id, circle_id),
+        ).fetchone()
+        if not person:
+            raise HTTPException(status_code=404, detail="Person not found in circle")
+
+        event = conn.execute(
+            "SELECT id FROM context_events WHERE id = ? AND circle_id = ?",
+            (payload.context_event_id, circle_id),
+        ).fetchone()
+        if not event:
+            raise HTTPException(status_code=404, detail="Context event not found in circle")
+
+        try:
+            conn.execute(
+                """
+                INSERT INTO person_context_links (
+                  person_id, context_event_id, circle_id, relevance_note, created_by, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    person_id,
+                    payload.context_event_id,
+                    circle_id,
+                    payload.relevance_note,
+                    actor_user_id,
+                    now,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            row = conn.execute(
+                """
+                SELECT person_id, context_event_id, circle_id, relevance_note, created_by, created_at
+                FROM person_context_links
+                WHERE person_id = ? AND context_event_id = ?
+                """,
+                (person_id, payload.context_event_id),
+            ).fetchone()
+            return PersonContextLinkOut(**dict(row))
+
+        row = conn.execute(
+            """
+            SELECT person_id, context_event_id, circle_id, relevance_note, created_by, created_at
+            FROM person_context_links
+            WHERE person_id = ? AND context_event_id = ?
+            """,
+            (person_id, payload.context_event_id),
+        ).fetchone()
+    return PersonContextLinkOut(**dict(row))
+
+
+@app.get("/circles/{circle_id}/persons/{person_id}/timeline", response_model=list[TimelineItem])
+def get_person_timeline(
+    circle_id: str,
+    person_id: str,
+    x_user_id: Optional[str] = Header(default=None),
+) -> list[TimelineItem]:
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _get_role(conn, circle_id, actor_user_id)
+
+        person = conn.execute(
+            "SELECT * FROM persons WHERE id = ? AND circle_id = ?",
+            (person_id, circle_id),
+        ).fetchone()
+        if not person:
+            raise HTTPException(status_code=404, detail="Person not found in circle")
+
+        rows = conn.execute(
+            """
+            SELECT ce.*
+            FROM context_events ce
+            INNER JOIN person_context_links pcl
+              ON pcl.context_event_id = ce.id
+            WHERE ce.circle_id = ? AND pcl.person_id = ?
+            ORDER BY ce.date ASC
+            """,
+            (circle_id, person_id),
+        ).fetchall()
+
+    timeline: list[TimelineItem] = []
+    if person["birth_date"]:
+        timeline.append(
+            TimelineItem(
+                date=person["birth_date"],
+                kind="life",
+                title=f"Birth of {person['full_name']}",
+                detail=person["birth_place"] or None,
+            )
+        )
+    for row in rows:
+        timeline.append(
+            TimelineItem(
+                date=row["date"],
+                kind="context",
+                title=row["title"],
+                detail=row["description"],
+            )
+        )
+    if person["death_date"]:
+        timeline.append(
+            TimelineItem(
+                date=person["death_date"],
+                kind="life",
+                title=f"Death of {person['full_name']}",
+                detail=None,
+            )
+        )
+    timeline.sort(key=lambda x: x.date)
+    return timeline
 
 
 @app.get("/circles/{circle_id}/graph/subgraph", response_model=SubgraphOut)
