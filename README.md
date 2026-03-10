@@ -24,6 +24,7 @@ Collaborative genealogy platform focused on South Asian family history with grap
   - create/list change requests
   - approve/reject change requests (owner/editor)
 - Minimal React frontend served at `/`.
+- SVG graph visualization panel for loaded subgraphs.
 - API tests with `pytest`.
 
 ## Project Layout
