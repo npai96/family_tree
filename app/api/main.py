@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 
@@ -412,6 +412,11 @@ def health() -> dict[str, str]:
 @app.get("/", include_in_schema=False)
 def web_app() -> FileResponse:
     return FileResponse(WEB_INDEX_PATH)
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> Response:
+    return Response(status_code=204)
 
 
 @app.post("/users", response_model=UserOut)

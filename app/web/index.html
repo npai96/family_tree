@@ -183,15 +183,15 @@
                   x2: to.x - 70,
                   y2: to.y + 20,
                   stroke: "#8aa4b5",
-                  "stroke-width": 2
+                  strokeWidth: 2
                 }),
                 React.createElement("text", {
                   key: "text",
                   x: (from.x + to.x) / 2,
                   y: (from.y + to.y) / 2 - 4,
-                  "text-anchor": "middle",
+                  textAnchor: "middle",
                   fill: "#5f6f82",
-                  "font-size": 11,
+                  fontSize: 11,
                 }, e.relationship_type)
               ]);
             }),
@@ -209,15 +209,15 @@
                   ry: 10,
                   fill: isRoot ? "#0e7490" : "#ffffff",
                   stroke: isRoot ? "#0e7490" : "#9fb6c4",
-                  "stroke-width": 1.5,
+                  strokeWidth: 1.5,
                 }),
                 React.createElement("text", {
                   key: "name",
                   x: p.x,
                   y: p.y + 22,
-                  "text-anchor": "middle",
+                  textAnchor: "middle",
                   fill: isRoot ? "#ffffff" : "#17222f",
-                  "font-size": 12,
+                  fontSize: 12,
                 }, nameById[n.id] || n.id.slice(0, 8))
               ]);
             })
@@ -271,7 +271,12 @@
           if (!activeUserId) return setCircles([]);
           const data = await requestJson("/circles", { headers });
           setCircles(data);
-          if (!selectedCircle && data.length) setSelectedCircle(data[0].id);
+          if (!data.length) {
+            setSelectedCircle("");
+            return;
+          }
+          const exists = data.some((c) => c.id === selectedCircle);
+          if (!selectedCircle || !exists) setSelectedCircle(data[0].id);
         }
 
         async function loadCircleData(circleId) {
@@ -294,7 +299,12 @@
         }
 
         useEffect(() => { loadUsers().catch((e) => setStatus(e.message)); }, []);
-        useEffect(() => { loadCircles().catch((e) => setStatus(e.message)); }, [activeUserId]);
+        useEffect(() => {
+          setSelectedCircle("");
+          setSubgraph(null);
+          setTimeline([]);
+          loadCircles().catch((e) => setStatus(e.message));
+        }, [activeUserId]);
         useEffect(() => { loadCircleData(selectedCircle).catch((e) => setStatus(e.message)); }, [activeUserId, selectedCircle]);
 
         async function createUser(e) {
@@ -450,6 +460,13 @@
         return React.createElement("div", { className: "app" }, [
           React.createElement("h1", { key: "h1" }, "Family Tree MVP"),
           React.createElement("div", { className: "status", key: "status" }, status),
+          React.createElement(
+            "div",
+            { className: "muted", key: "ctx" },
+            activeUserId
+              ? `Active user: ${users.find((u) => u.id === activeUserId)?.display_name || activeUserId.slice(0, 8)}`
+              : "No active user selected"
+          ),
           React.createElement("div", { className: "grid", key: "top-grid" }, [
             React.createElement("form", { className: "card", onSubmit: (e) => createUser(e).catch((x) => setStatus(x.message)), key: "users" }, [
               React.createElement("h3", { key: "h" }, "Users"),
