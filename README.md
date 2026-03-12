@@ -26,6 +26,10 @@ Collaborative genealogy platform focused on South Asian family history with grap
 - Minimal React frontend served at `/`.
 - SVG graph visualization panel for loaded subgraphs.
 - Context event creation, person-event linking, and person timeline retrieval.
+- Graph interaction features:
+  - click node to open profile details and highlight lineage path
+  - zoom controls (`+`, `-`, `fit`, `1:1`)
+  - timeline item click highlights related graph node(s)
 - API tests with `pytest`.
 
 ## Project Layout

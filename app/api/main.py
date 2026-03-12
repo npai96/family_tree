@@ -288,6 +288,7 @@ class TimelineItem(BaseModel):
     kind: Literal["life", "context"]
     title: str
     detail: Optional[str] = None
+    ref_id: Optional[str] = None
 
 
 class SubgraphOut(BaseModel):
@@ -673,6 +674,34 @@ def list_context_events(circle_id: str, x_user_id: Optional[str] = Header(defaul
     return [ContextEventOut(**dict(row)) for row in rows]
 
 
+@app.get("/circles/{circle_id}/context-events/{context_event_id}/persons", response_model=list[PersonOut])
+def list_context_event_persons(
+    circle_id: str,
+    context_event_id: str,
+    x_user_id: Optional[str] = Header(default=None),
+) -> list[PersonOut]:
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _get_role(conn, circle_id, actor_user_id)
+        event = conn.execute(
+            "SELECT id FROM context_events WHERE id = ? AND circle_id = ?",
+            (context_event_id, circle_id),
+        ).fetchone()
+        if not event:
+            raise HTTPException(status_code=404, detail="Context event not found in circle")
+        rows = conn.execute(
+            """
+            SELECT p.*
+            FROM persons p
+            INNER JOIN person_context_links pcl ON pcl.person_id = p.id
+            WHERE pcl.circle_id = ? AND pcl.context_event_id = ?
+            ORDER BY p.full_name ASC
+            """,
+            (circle_id, context_event_id),
+        ).fetchall()
+    return [PersonOut(**dict(row)) for row in rows]
+
+
 @app.post("/circles/{circle_id}/persons/{person_id}/context-links", response_model=PersonContextLinkOut)
 def link_context_event_to_person(
     circle_id: str,
@@ -774,6 +803,7 @@ def get_person_timeline(
                 kind="life",
                 title=f"Birth of {person['full_name']}",
                 detail=person["birth_place"] or None,
+                ref_id=person_id,
             )
         )
     for row in rows:
@@ -783,6 +813,7 @@ def get_person_timeline(
                 kind="context",
                 title=row["title"],
                 detail=row["description"],
+                ref_id=row["id"],
             )
         )
     if person["death_date"]:
@@ -792,6 +823,7 @@ def get_person_timeline(
                 kind="life",
                 title=f"Death of {person['full_name']}",
                 detail=None,
+                ref_id=person_id,
             )
         )
     timeline.sort(key=lambda x: x.date)

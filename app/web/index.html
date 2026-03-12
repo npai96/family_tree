@@ -6,37 +6,94 @@
     <title>Family Tree MVP</title>
     <style>
       :root {
-        --bg: #f4f7f9;
-        --panel: #ffffff;
-        --line: #d5dee6;
-        --ink: #17222f;
-        --muted: #5f6f82;
-        --accent: #0e7490;
+        --bg: #f3efe7;
+        --panel: #fcfaf5;
+        --line: #d7cfc2;
+        --ink: #27313a;
+        --muted: #62707f;
+        --accent: #1e6c6d;
+        --accent-soft: #dfefeb;
       }
+      * { box-sizing: border-box; }
       body {
         margin: 0;
-        font-family: "Avenir Next", "Segoe UI", sans-serif;
+        font-family: "Source Sans Pro", "Segoe UI", sans-serif;
         color: var(--ink);
-        background: linear-gradient(160deg, #e6f4f8, var(--bg));
+        background: radial-gradient(circle at top right, #e7f0f1, var(--bg) 45%);
       }
-      .app {
-        max-width: 1280px;
-        margin: 0 auto;
-        padding: 14px;
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px 14px;
+        background: rgba(252, 250, 245, 0.93);
+        border-bottom: 1px solid var(--line);
+        backdrop-filter: blur(6px);
       }
-      h1, h3 {
-        margin: 0 0 10px 0;
+      .title {
+        font-family: "Palatino Linotype", "Book Antiqua", serif;
+        font-size: 24px;
+        font-weight: 700;
       }
-      .grid {
+      .subtitle {
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .btn {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        color: var(--ink);
+        border-radius: 999px;
+        padding: 6px 10px;
+        cursor: pointer;
+        font-size: 12px;
+      }
+      .shell {
+        height: calc(100vh - 62px);
         display: grid;
-        gap: 12px;
-        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 8px;
+        padding: 8px;
       }
-      .card {
+      .sidebar {
         background: var(--panel);
         border: 1px solid var(--line);
+        border-radius: 12px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .sidebar-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px;
+        border-bottom: 1px solid var(--line);
+      }
+      .sidebar-body {
+        overflow: auto;
+        padding: 10px;
+      }
+      .collapsed {
+        align-items: center;
+        justify-content: center;
+      }
+      .collapsed .sidebar-body,
+      .collapsed .sidebar-head span {
+        display: none;
+      }
+      .card {
+        border: 1px solid var(--line);
         border-radius: 10px;
-        padding: 12px;
+        padding: 10px;
+        margin-bottom: 10px;
+        background: #fff;
+      }
+      details.card summary {
+        cursor: pointer;
+        font-weight: 700;
       }
       label {
         display: block;
@@ -46,60 +103,76 @@
       }
       input, select, button {
         width: 100%;
-        box-sizing: border-box;
         padding: 8px;
-        border: 1px solid var(--line);
         border-radius: 8px;
+        border: 1px solid var(--line);
         margin-bottom: 8px;
         background: #fff;
       }
       button {
-        border: none;
         background: var(--accent);
         color: #fff;
+        border: none;
+        font-weight: 700;
         cursor: pointer;
-        font-weight: 600;
       }
-      button.secondary {
-        background: #475569;
+      .ghost {
+        background: #516171;
       }
-      .status {
-        min-height: 20px;
-        color: #0f766e;
-        margin-bottom: 8px;
-      }
+      .muted { color: var(--muted); font-size: 12px; }
       .list {
-        max-height: 220px;
+        max-height: 180px;
         overflow: auto;
         border: 1px dashed var(--line);
         border-radius: 8px;
         padding: 8px;
-      }
-      .item {
-        padding: 6px 0;
-        border-bottom: 1px dotted var(--line);
         font-size: 13px;
       }
-      .item:last-child {
-        border-bottom: none;
-      }
-      .muted {
-        color: var(--muted);
-        font-size: 12px;
-      }
-      .graph-shell {
-        overflow: auto;
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        background: #fbfdff;
-      }
+      .item { padding: 6px 0; border-bottom: 1px dotted var(--line); }
+      .item:last-child { border-bottom: none; }
       .pill {
         display: inline-block;
         padding: 2px 8px;
         border-radius: 999px;
+        background: var(--accent-soft);
+        color: #2f4f4f;
         font-size: 11px;
-        background: #e2e8f0;
         margin-left: 6px;
+      }
+      .graph-wrap {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: linear-gradient(180deg, #fefefe, #f7f7f7);
+        position: relative;
+        overflow: hidden;
+      }
+      .status-badge {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        z-index: 10;
+        font-size: 12px;
+        color: #1f4f4f;
+        background: rgba(223, 239, 235, 0.9);
+        border: 1px solid #b9d7d0;
+        border-radius: 999px;
+        padding: 5px 10px;
+      }
+      .graph-scroll {
+        height: 100%;
+        overflow: auto;
+      }
+      .timeline-dot {
+        display: inline-block;
+        width: 9px;
+        height: 9px;
+        border-radius: 999px;
+        margin-right: 6px;
+      }
+      @media (max-width: 1100px) {
+        .shell { grid-template-columns: 1fr !important; height: auto; }
+        .sidebar { max-height: 380px; }
+        .graph-wrap { height: 70vh; }
       }
     </style>
   </head>
@@ -108,121 +181,149 @@
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script>
-      const { useEffect, useMemo, useState } = React;
+      const { useEffect, useMemo, useRef, useState } = React;
 
-      function GraphView({ subgraph, rootPersonId }) {
-        if (!subgraph || !subgraph.persons || subgraph.persons.length === 0) {
-          return React.createElement("div", { className: "muted" }, "Load a subgraph to visualize it.");
-        }
+      function edgeKey(fromId, toId) {
+        return `${fromId}->${toId}`;
+      }
 
-        const nodes = subgraph.persons;
-        const edges = subgraph.relationships;
-        const nameById = {};
-        nodes.forEach((n) => { nameById[n.id] = n.full_name; });
+      function computeLayout(subgraph, rootPersonId) {
+        const nodes = subgraph?.persons || [];
+        const edges = subgraph?.relationships || [];
+        if (!nodes.length) return { width: 1000, height: 600, pos: {}, nodes, edges };
 
-        const adjacency = {};
+        const outgoing = {};
         edges.forEach((e) => {
-          if (!adjacency[e.from_person_id]) adjacency[e.from_person_id] = [];
-          adjacency[e.from_person_id].push(e.to_person_id);
+          if (!outgoing[e.from_person_id]) outgoing[e.from_person_id] = [];
+          outgoing[e.from_person_id].push(e.to_person_id);
         });
 
-        const levelMap = {};
-        const queue = [[rootPersonId, 0]];
-        levelMap[rootPersonId] = 0;
-        while (queue.length) {
-          const [id, level] = queue.shift();
-          const next = adjacency[id] || [];
-          next.forEach((child) => {
-            if (levelMap[child] === undefined) {
-              levelMap[child] = level + 1;
-              queue.push([child, level + 1]);
+        const level = {};
+        if (rootPersonId) level[rootPersonId] = 0;
+        const q = rootPersonId ? [[rootPersonId, 0]] : [];
+        while (q.length) {
+          const [id, depth] = q.shift();
+          (outgoing[id] || []).forEach((nextId) => {
+            if (level[nextId] === undefined) {
+              level[nextId] = depth + 1;
+              q.push([nextId, depth + 1]);
             }
           });
         }
-        nodes.forEach((n) => {
-          if (levelMap[n.id] === undefined) levelMap[n.id] = 0;
-        });
+        nodes.forEach((n) => { if (level[n.id] === undefined) level[n.id] = 0; });
 
         const groups = {};
         nodes.forEach((n) => {
-          const lv = levelMap[n.id];
-          if (!groups[lv]) groups[lv] = [];
-          groups[lv].push(n);
+          const d = level[n.id];
+          if (!groups[d]) groups[d] = [];
+          groups[d].push(n);
         });
 
-        const levels = Object.keys(groups).map(Number).sort((a, b) => a - b);
-        const positioned = {};
-        const colGap = 220;
-        const rowGap = 110;
-        levels.forEach((lv) => {
-          const col = groups[lv];
-          col.forEach((node, idx) => {
-            positioned[node.id] = {
-              x: 120 + lv * colGap,
-              y: 80 + idx * rowGap,
-            };
+        const cols = Object.keys(groups).map(Number).sort((a, b) => a - b);
+        const pos = {};
+        const colGap = 260;
+        const rowGap = 120;
+        cols.forEach((c) => {
+          groups[c].forEach((node, i) => {
+            pos[node.id] = { x: 170 + c * colGap, y: 100 + i * rowGap };
           });
         });
 
-        const maxLevel = levels.length ? Math.max(...levels) : 0;
+        const maxCol = cols.length ? Math.max(...cols) : 0;
         const maxRows = Math.max(1, ...Object.values(groups).map((g) => g.length));
-        const width = 260 + (maxLevel + 1) * colGap;
-        const height = 180 + maxRows * rowGap;
+        const width = 360 + (maxCol + 1) * colGap;
+        const height = 260 + maxRows * rowGap;
+        return { width, height, pos, nodes, edges };
+      }
 
-        return React.createElement("div", { className: "graph-shell" },
-          React.createElement("svg", { width, height }, [
+      function GraphView({
+        subgraph,
+        rootPersonId,
+        zoom,
+        selectedNodeId,
+        highlightedNodeIds,
+        highlightedEdgeKeys,
+        onNodeClick,
+      }) {
+        if (!subgraph || !subgraph.persons || !subgraph.persons.length) {
+          return React.createElement("div", { className: "muted", style: { padding: "14px" } }, "Load a subgraph to begin exploration.");
+        }
+
+        const { width, height, pos, nodes, edges } = computeLayout(subgraph, rootPersonId);
+        const names = {};
+        nodes.forEach((n) => { names[n.id] = n.full_name; });
+
+        return React.createElement("svg", { width: Math.ceil(width * zoom), height: Math.ceil(height * zoom) }, [
+          React.createElement("g", { key: "scale", transform: `scale(${zoom})` }, [
+            React.createElement("defs", { key: "defs" }, [
+              React.createElement("marker", {
+                key: "arrow",
+                id: "arrowhead",
+                markerWidth: 10,
+                markerHeight: 7,
+                refX: 8,
+                refY: 3.5,
+                orient: "auto",
+              }, [
+                React.createElement("polygon", { key: "poly", points: "0 0, 10 3.5, 0 7", fill: "#97a8b6" })
+              ])
+            ]),
             ...edges.map((e) => {
-              const from = positioned[e.from_person_id];
-              const to = positioned[e.to_person_id];
+              const from = pos[e.from_person_id];
+              const to = pos[e.to_person_id];
               if (!from || !to) return null;
-              return React.createElement("g", { key: `edge-${e.id}` }, [
-                React.createElement("line", {
+              const isHighlighted = highlightedEdgeKeys.has(edgeKey(e.from_person_id, e.to_person_id));
+              return React.createElement("g", { key: e.id }, [
+                React.createElement("path", {
                   key: "line",
-                  x1: from.x + 70,
-                  y1: from.y + 20,
-                  x2: to.x - 70,
-                  y2: to.y + 20,
-                  stroke: "#8aa4b5",
-                  strokeWidth: 2
+                  d: `M ${from.x + 80} ${from.y + 24} C ${from.x + 130} ${from.y + 24}, ${to.x - 130} ${to.y + 24}, ${to.x - 80} ${to.y + 24}`,
+                  fill: "none",
+                  stroke: isHighlighted ? "#d18b3d" : "#97a8b6",
+                  strokeWidth: isHighlighted ? 3.5 : 2,
+                  markerEnd: "url(#arrowhead)"
                 }),
                 React.createElement("text", {
-                  key: "text",
+                  key: "label",
                   x: (from.x + to.x) / 2,
-                  y: (from.y + to.y) / 2 - 4,
+                  y: (from.y + to.y) / 2 - 8,
                   textAnchor: "middle",
-                  fill: "#5f6f82",
                   fontSize: 11,
+                  fill: isHighlighted ? "#a96a26" : "#657786"
                 }, e.relationship_type)
               ]);
             }),
             ...nodes.map((n) => {
-              const p = positioned[n.id];
-              const isRoot = n.id === rootPersonId;
-              return React.createElement("g", { key: `node-${n.id}` }, [
+              const p = pos[n.id];
+              const root = n.id === rootPersonId;
+              const selected = n.id === selectedNodeId;
+              const highlighted = highlightedNodeIds.has(n.id);
+              const fill = root ? "#1e6c6d" : selected ? "#f2c98e" : highlighted ? "#f5e6cf" : "#fff";
+              const stroke = root ? "#1e6c6d" : selected ? "#b87524" : highlighted ? "#d0a36b" : "#9eb1bf";
+              const textColor = root ? "#fff" : "#2b3641";
+              return React.createElement("g", { key: n.id, onClick: () => onNodeClick(n.id), style: { cursor: "pointer" } }, [
                 React.createElement("rect", {
-                  key: "rect",
-                  x: p.x - 70,
+                  key: "r",
+                  x: p.x - 80,
                   y: p.y,
-                  width: 140,
-                  height: 40,
-                  rx: 10,
-                  ry: 10,
-                  fill: isRoot ? "#0e7490" : "#ffffff",
-                  stroke: isRoot ? "#0e7490" : "#9fb6c4",
-                  strokeWidth: 1.5,
+                  width: 160,
+                  height: 48,
+                  rx: 12,
+                  fill,
+                  stroke,
+                  strokeWidth: selected ? 2.8 : 1.7
                 }),
                 React.createElement("text", {
-                  key: "name",
+                  key: "t",
                   x: p.x,
-                  y: p.y + 22,
+                  y: p.y + 29,
                   textAnchor: "middle",
-                  fill: isRoot ? "#ffffff" : "#17222f",
                   fontSize: 12,
-                }, nameById[n.id] || n.id.slice(0, 8))
+                  fill: textColor
+                }, names[n.id] || n.id.slice(0, 8))
               ]);
             })
           ])
-        );
+        ]);
       }
 
       function App() {
@@ -239,6 +340,14 @@
         const [subgraph, setSubgraph] = useState(null);
         const [lastRoot, setLastRoot] = useState("");
         const [status, setStatus] = useState("");
+        const [leftOpen, setLeftOpen] = useState(true);
+        const [rightOpen, setRightOpen] = useState(true);
+        const [selectedPersonId, setSelectedPersonId] = useState("");
+        const [highlightedNodeIds, setHighlightedNodeIds] = useState([]);
+        const [highlightedEdgeKeys, setHighlightedEdgeKeys] = useState([]);
+        const [zoom, setZoom] = useState(1);
+        const [graphSize, setGraphSize] = useState({ width: 1000, height: 600 });
+        const graphViewportRef = useRef(null);
 
         const headers = useMemo(() => {
           if (!activeUserId) return { "Content-Type": "application/json" };
@@ -246,6 +355,13 @@
         }, [activeUserId]);
 
         const personOptions = useMemo(() => persons.map((p) => ({ value: p.id, label: p.full_name })), [persons]);
+        const activeUserName = useMemo(() => users.find((u) => u.id === activeUserId)?.display_name || "", [users, activeUserId]);
+        const selectedPerson = useMemo(
+          () => persons.find((p) => p.id === selectedPersonId) || (subgraph?.persons || []).find((p) => p.id === selectedPersonId) || null,
+          [persons, subgraph, selectedPersonId]
+        );
+        const highlightedNodeSet = useMemo(() => new Set(highlightedNodeIds), [highlightedNodeIds]);
+        const highlightedEdgeSet = useMemo(() => new Set(highlightedEdgeKeys), [highlightedEdgeKeys]);
 
         function setActiveUser(id) {
           setActiveUserId(id);
@@ -261,6 +377,54 @@
           return res.json();
         }
 
+        function findPathFromRoot(targetId) {
+          if (!subgraph || !lastRoot || !targetId) return { nodes: [], edges: [] };
+          const prev = {};
+          const q = [lastRoot];
+          const visited = new Set([lastRoot]);
+          while (q.length) {
+            const cur = q.shift();
+            if (cur === targetId) break;
+            (subgraph.relationships || []).forEach((edge) => {
+              if (edge.from_person_id === cur && !visited.has(edge.to_person_id)) {
+                visited.add(edge.to_person_id);
+                prev[edge.to_person_id] = cur;
+                q.push(edge.to_person_id);
+              }
+            });
+          }
+          if (!visited.has(targetId)) return { nodes: [targetId], edges: [] };
+          const nodes = [];
+          const edges = [];
+          let cur = targetId;
+          while (cur !== undefined) {
+            nodes.push(cur);
+            const parent = prev[cur];
+            if (parent !== undefined) {
+              edges.push(edgeKey(parent, cur));
+            }
+            cur = parent;
+          }
+          return { nodes: nodes.reverse(), edges: edges.reverse() };
+        }
+
+        function applyPersonFocus(personId) {
+          setSelectedPersonId(personId);
+          const path = findPathFromRoot(personId);
+          setHighlightedNodeIds(path.nodes.length ? path.nodes : [personId]);
+          setHighlightedEdgeKeys(path.edges);
+        }
+
+        function fitGraph() {
+          const el = graphViewportRef.current;
+          if (!el || !graphSize.width || !graphSize.height) return;
+          const pad = 60;
+          const nextZoom = Math.max(0.4, Math.min(1.8, Math.min((el.clientWidth - pad) / graphSize.width, (el.clientHeight - pad) / graphSize.height)));
+          setZoom(nextZoom);
+          el.scrollTop = 0;
+          el.scrollLeft = 0;
+        }
+
         async function loadUsers() {
           const data = await requestJson("/users");
           setUsers(data);
@@ -271,10 +435,7 @@
           if (!activeUserId) return setCircles([]);
           const data = await requestJson("/circles", { headers });
           setCircles(data);
-          if (!data.length) {
-            setSelectedCircle("");
-            return;
-          }
+          if (!data.length) return setSelectedCircle("");
           const exists = data.some((c) => c.id === selectedCircle);
           if (!selectedCircle || !exists) setSelectedCircle(data[0].id);
         }
@@ -291,11 +452,7 @@
             requestJson(`/circles/${circleId}/change-requests`, { headers }),
             requestJson(`/circles/${circleId}/context-events`, { headers }),
           ]);
-          setMembers(m);
-          setPersons(p);
-          setRelationships(r);
-          setChangeRequests(cr);
-          setContextEvents(ce);
+          setMembers(m); setPersons(p); setRelationships(r); setChangeRequests(cr); setContextEvents(ce);
         }
 
         useEffect(() => { loadUsers().catch((e) => setStatus(e.message)); }, []);
@@ -303,18 +460,28 @@
           setSelectedCircle("");
           setSubgraph(null);
           setTimeline([]);
+          setSelectedPersonId("");
+          setHighlightedNodeIds([]);
+          setHighlightedEdgeKeys([]);
           loadCircles().catch((e) => setStatus(e.message));
         }, [activeUserId]);
         useEffect(() => { loadCircleData(selectedCircle).catch((e) => setStatus(e.message)); }, [activeUserId, selectedCircle]);
+        useEffect(() => {
+          if (!subgraph) return;
+          const next = computeLayout(subgraph, lastRoot);
+          setGraphSize((prev) => (
+            prev.width === next.width && prev.height === next.height
+              ? prev
+              : { width: next.width, height: next.height }
+          ));
+        }, [subgraph, lastRoot]);
 
         async function createUser(e) {
           e.preventDefault();
-          const display_name = e.target.display_name.value.trim();
-          if (!display_name) return;
           const user = await requestJson("/users", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ display_name }),
+            body: JSON.stringify({ display_name: e.target.display_name.value.trim() }),
           });
           setStatus("User created");
           e.target.reset();
@@ -324,13 +491,7 @@
 
         async function createCircle(e) {
           e.preventDefault();
-          const name = e.target.name.value.trim();
-          if (!name) return;
-          const circle = await requestJson("/circles", {
-            method: "POST",
-            headers,
-            body: JSON.stringify({ name }),
-          });
+          const circle = await requestJson("/circles", { method: "POST", headers, body: JSON.stringify({ name: e.target.name.value.trim() }) });
           setStatus("Circle created");
           e.target.reset();
           await loadCircles();
@@ -339,12 +500,10 @@
 
         async function addMember(e) {
           e.preventDefault();
-          const user_id = e.target.user_id.value;
-          const role = e.target.role.value;
           await requestJson(`/circles/${selectedCircle}/members`, {
             method: "POST",
             headers,
-            body: JSON.stringify({ user_id, role }),
+            body: JSON.stringify({ user_id: e.target.user_id.value, role: e.target.role.value }),
           });
           setStatus("Member upserted");
           await loadCircleData(selectedCircle);
@@ -352,12 +511,10 @@
 
         async function addPerson(e) {
           e.preventDefault();
-          const full_name = e.target.full_name.value.trim();
-          const religion = e.target.religion.value.trim() || null;
           await requestJson(`/circles/${selectedCircle}/persons`, {
             method: "POST",
             headers,
-            body: JSON.stringify({ full_name, religion }),
+            body: JSON.stringify({ full_name: e.target.full_name.value.trim(), religion: e.target.religion.value.trim() || null }),
           });
           setStatus("Person created");
           e.target.reset();
@@ -382,26 +539,31 @@
 
         async function loadSubgraph(e) {
           e.preventDefault();
-          const root_person_id = e.target.root_person_id.value;
-          const direction = e.target.direction.value;
-          const depth = Number(e.target.depth.value || 2);
+          const root = e.target.root_person_id.value;
           const data = await requestJson(
-            `/circles/${selectedCircle}/graph/subgraph?root_person_id=${root_person_id}&direction=${direction}&depth=${depth}`,
+            `/circles/${selectedCircle}/graph/subgraph?root_person_id=${root}&direction=${e.target.direction.value}&depth=${Number(e.target.depth.value || 2)}`,
             { headers }
           );
           setSubgraph(data);
-          setLastRoot(root_person_id);
-          setStatus(`Subgraph loaded: ${data.persons.length} nodes, ${data.relationships.length} edges`);
+          setLastRoot(root);
+          setSelectedPersonId(root);
+          setHighlightedNodeIds([root]);
+          setHighlightedEdgeKeys([]);
+          setZoom(1);
+          setStatus(`Loaded ${data.persons.length} nodes and ${data.relationships.length} edges`);
+          setTimeout(fitGraph, 0);
         }
 
         async function createChangeRequest(e) {
           e.preventDefault();
-          const entity_id = e.target.entity_id.value;
-          const religion = e.target.religion.value.trim() || null;
           await requestJson(`/circles/${selectedCircle}/change-requests`, {
             method: "POST",
             headers,
-            body: JSON.stringify({ entity_type: "person", entity_id, proposed_patch_json: { religion } }),
+            body: JSON.stringify({
+              entity_type: "person",
+              entity_id: e.target.entity_id.value,
+              proposed_patch_json: { religion: e.target.religion.value.trim() || null },
+            }),
           });
           setStatus("Change request created");
           e.target.reset();
@@ -412,7 +574,7 @@
           await requestJson(`/circles/${selectedCircle}/change-requests/${id}/${action}`, {
             method: "POST",
             headers,
-            body: JSON.stringify({ review_comment: `${action} from UI` }),
+            body: JSON.stringify({ review_comment: `${action} from sidebar` }),
           });
           setStatus(`Change request ${action}`);
           await loadCircleData(selectedCircle);
@@ -446,203 +608,236 @@
               relevance_note: e.target.relevance_note.value.trim() || null,
             }),
           });
-          setStatus("Event linked to person");
+          setStatus("Linked event to person");
         }
 
         async function loadTimeline(e) {
           e.preventDefault();
-          const person_id = e.target.person_id.value;
-          const data = await requestJson(`/circles/${selectedCircle}/persons/${person_id}/timeline`, { headers });
+          const data = await requestJson(`/circles/${selectedCircle}/persons/${e.target.person_id.value}/timeline`, { headers });
           setTimeline(data);
-          setStatus(`Timeline loaded: ${data.length} events`);
+          setStatus(`Loaded timeline with ${data.length} items`);
         }
 
-        return React.createElement("div", { className: "app" }, [
-          React.createElement("h1", { key: "h1" }, "Family Tree MVP"),
-          React.createElement("div", { className: "status", key: "status" }, status),
-          React.createElement(
-            "div",
-            { className: "muted", key: "ctx" },
-            activeUserId
-              ? `Active user: ${users.find((u) => u.id === activeUserId)?.display_name || activeUserId.slice(0, 8)}`
-              : "No active user selected"
-          ),
-          React.createElement("div", { className: "grid", key: "top-grid" }, [
-            React.createElement("form", { className: "card", onSubmit: (e) => createUser(e).catch((x) => setStatus(x.message)), key: "users" }, [
-              React.createElement("h3", { key: "h" }, "Users"),
-              React.createElement("input", { key: "i1", name: "display_name", required: true, placeholder: "Display name" }),
-              React.createElement("button", { key: "b1", type: "submit" }, "Create User"),
-              React.createElement("label", { key: "l2" }, "Active User"),
-              React.createElement(
-                "select",
-                { key: "s1", value: activeUserId, onChange: (e) => setActiveUser(e.target.value) },
-                [React.createElement("option", { key: "blank", value: "" }, "Select user")]
-                  .concat(users.map((u) => React.createElement("option", { key: u.id, value: u.id }, u.display_name)))
-              ),
+        async function onTimelineItemClick(item) {
+          if (item.kind === "life" && item.ref_id) {
+            applyPersonFocus(item.ref_id);
+            setStatus("Focused timeline life event in graph");
+            return;
+          }
+          if (item.kind === "context" && item.ref_id) {
+            const linkedPersons = await requestJson(`/circles/${selectedCircle}/context-events/${item.ref_id}/persons`, { headers });
+            const ids = linkedPersons.map((p) => p.id);
+            setHighlightedNodeIds(ids);
+            setHighlightedEdgeKeys([]);
+            if (ids.length) setSelectedPersonId(ids[0]);
+            setStatus(`Highlighted ${ids.length} linked person nodes`);
+          }
+        }
+
+        const gridCols = `${leftOpen ? "320px" : "44px"} 1fr ${rightOpen ? "340px" : "44px"}`;
+
+        return React.createElement(React.Fragment, null, [
+          React.createElement("div", { className: "topbar", key: "top" }, [
+            React.createElement("div", { key: "t" }, [
+              React.createElement("div", { className: "title", key: "ttl" }, "Family Chronicle"),
+              React.createElement("div", { className: "subtitle", key: "sub" }, "Trustworthy lineage mapping with contextual exploration"),
             ]),
-            React.createElement("form", { className: "card", onSubmit: (e) => createCircle(e).catch((x) => setStatus(x.message)), key: "circles" }, [
-              React.createElement("h3", { key: "h" }, "Circles"),
-              React.createElement("input", { key: "i1", name: "name", required: true, placeholder: "Circle name" }),
-              React.createElement("button", { key: "b1", type: "submit" }, "Create Circle"),
-              React.createElement("label", { key: "l2" }, "Active Circle"),
-              React.createElement(
-                "select",
-                { key: "s1", value: selectedCircle, onChange: (e) => setSelectedCircle(e.target.value) },
-                [React.createElement("option", { key: "blank", value: "" }, "Select circle")]
-                  .concat(circles.map((c) => React.createElement("option", { key: c.id, value: c.id }, c.name)))
-              ),
-            ]),
-            React.createElement("form", { className: "card", onSubmit: (e) => addMember(e).catch((x) => setStatus(x.message)), key: "members" }, [
-              React.createElement("h3", { key: "h" }, "Membership"),
-              React.createElement(
-                "select",
-                { key: "s1", name: "user_id" },
-                users.map((u) => React.createElement("option", { key: u.id, value: u.id }, u.display_name))
-              ),
-              React.createElement(
-                "select",
-                { key: "s2", name: "role" },
-                [
-                  React.createElement("option", { key: "editor", value: "editor" }, "editor"),
-                  React.createElement("option", { key: "viewer", value: "viewer" }, "viewer")
-                ]
-              ),
-              React.createElement("button", { key: "b1", type: "submit", disabled: !selectedCircle }, "Add/Update Member"),
-              React.createElement("div", { className: "list", key: "list" }, members.map((m) => {
-                const user = users.find((u) => u.id === m.user_id);
-                return React.createElement("div", { className: "item", key: `${m.circle_id}-${m.user_id}` }, [
-                  React.createElement("span", { key: "name" }, user ? user.display_name : m.user_id.slice(0, 8)),
-                  React.createElement("span", { key: "role", className: "pill" }, m.role),
-                ]);
-              }))
+            React.createElement("div", { key: "actions", style: { display: "flex", gap: "8px", alignItems: "center" } }, [
+              React.createElement("button", { className: "btn", key: "zoom-in", onClick: () => setZoom((z) => Math.min(2.2, z + 0.15)) }, "Zoom +"),
+              React.createElement("button", { className: "btn", key: "zoom-out", onClick: () => setZoom((z) => Math.max(0.35, z - 0.15)) }, "Zoom -"),
+              React.createElement("button", { className: "btn", key: "fit", onClick: fitGraph }, "Fit"),
+              React.createElement("button", { className: "btn", key: "reset", onClick: () => setZoom(1) }, "1:1"),
+              React.createElement("button", { className: "btn", key: "l", onClick: () => setLeftOpen((v) => !v) }, leftOpen ? "Hide Left" : "Show Left"),
+              React.createElement("button", { className: "btn", key: "r", onClick: () => setRightOpen((v) => !v) }, rightOpen ? "Hide Right" : "Show Right"),
             ]),
           ]),
-          React.createElement("div", { className: "grid", key: "mid-grid" }, [
-            React.createElement("form", { className: "card", onSubmit: (e) => addPerson(e).catch((x) => setStatus(x.message)), key: "people" }, [
-              React.createElement("h3", { key: "h" }, "People"),
-              React.createElement("input", { key: "i1", name: "full_name", required: true, placeholder: "Full name" }),
-              React.createElement("input", { key: "i2", name: "religion", placeholder: "Religion" }),
-              React.createElement("button", { key: "b1", type: "submit", disabled: !selectedCircle }, "Add Person"),
-              React.createElement("div", { className: "list", key: "list" }, persons.map((p) =>
-                React.createElement("div", { className: "item", key: p.id }, `${p.full_name} (${p.religion || "N/A"})`)
-              )),
+          React.createElement("div", { className: "shell", style: { gridTemplateColumns: gridCols }, key: "shell" }, [
+            React.createElement("aside", { className: `sidebar ${leftOpen ? "" : "collapsed"}`, key: "left" }, [
+              React.createElement("div", { className: "sidebar-head", key: "h" }, [
+                React.createElement("span", { key: "txt" }, "Setup & Records"),
+                React.createElement("button", { className: "btn", key: "b", onClick: () => setLeftOpen((v) => !v) }, leftOpen ? "◀" : "▶"),
+              ]),
+              leftOpen ? React.createElement("div", { className: "sidebar-body", key: "body" }, [
+                React.createElement("details", { className: "card", open: true, key: "u" }, [
+                  React.createElement("summary", { key: "s" }, "Users & Circles"),
+                  React.createElement("form", { key: "f1", onSubmit: (e) => createUser(e).catch((x) => setStatus(x.message)) }, [
+                    React.createElement("input", { key: "i1", name: "display_name", required: true, placeholder: "New user name" }),
+                    React.createElement("button", { key: "b1", type: "submit" }, "Create User"),
+                  ]),
+                  React.createElement("label", { key: "l1" }, "Active User"),
+                  React.createElement("select", { key: "s1", value: activeUserId, onChange: (e) => setActiveUser(e.target.value) },
+                    [React.createElement("option", { key: "x", value: "" }, "Select user")]
+                      .concat(users.map((u) => React.createElement("option", { key: u.id, value: u.id }, u.display_name)))
+                  ),
+                  React.createElement("form", { key: "f2", onSubmit: (e) => createCircle(e).catch((x) => setStatus(x.message)) }, [
+                    React.createElement("input", { key: "i2", name: "name", required: true, placeholder: "New circle name" }),
+                    React.createElement("button", { key: "b2", type: "submit" }, "Create Circle"),
+                  ]),
+                  React.createElement("label", { key: "l2" }, "Active Circle"),
+                  React.createElement("select", { key: "s2", value: selectedCircle, onChange: (e) => setSelectedCircle(e.target.value) },
+                    [React.createElement("option", { key: "z", value: "" }, "Select circle")]
+                      .concat(circles.map((c) => React.createElement("option", { key: c.id, value: c.id }, c.name)))
+                  ),
+                  React.createElement("div", { className: "muted", key: "ctx" }, activeUserName ? `Active: ${activeUserName}` : "No active user"),
+                ]),
+                React.createElement("details", { className: "card", key: "m" }, [
+                  React.createElement("summary", { key: "s" }, "Membership"),
+                  React.createElement("form", { key: "f", onSubmit: (e) => addMember(e).catch((x) => setStatus(x.message)) }, [
+                    React.createElement("select", { key: "s1", name: "user_id" },
+                      users.map((u) => React.createElement("option", { key: u.id, value: u.id }, u.display_name))
+                    ),
+                    React.createElement("select", { key: "s2", name: "role" }, [
+                      React.createElement("option", { key: "e", value: "editor" }, "editor"),
+                      React.createElement("option", { key: "v", value: "viewer" }, "viewer"),
+                    ]),
+                    React.createElement("button", { key: "b", type: "submit", disabled: !selectedCircle }, "Add / Update"),
+                  ]),
+                  React.createElement("div", { className: "list", key: "l" },
+                    members.map((m) => {
+                      const user = users.find((u) => u.id === m.user_id);
+                      return React.createElement("div", { className: "item", key: `${m.circle_id}-${m.user_id}` }, [
+                        React.createElement("span", { key: "n" }, user ? user.display_name : m.user_id.slice(0, 8)),
+                        React.createElement("span", { className: "pill", key: "p" }, m.role),
+                      ]);
+                    })
+                  ),
+                ]),
+                React.createElement("details", { className: "card", key: "p" }, [
+                  React.createElement("summary", { key: "s" }, "People & Relationships"),
+                  React.createElement("form", { key: "f1", onSubmit: (e) => addPerson(e).catch((x) => setStatus(x.message)) }, [
+                    React.createElement("input", { key: "n", name: "full_name", required: true, placeholder: "Full name" }),
+                    React.createElement("input", { key: "r", name: "religion", placeholder: "Religion" }),
+                    React.createElement("button", { key: "b", type: "submit", disabled: !selectedCircle }, "Add Person"),
+                  ]),
+                  React.createElement("form", { key: "f2", onSubmit: (e) => addRelationship(e).catch((x) => setStatus(x.message)) }, [
+                    React.createElement("select", { key: "a", name: "from_person_id" }, personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))),
+                    React.createElement("select", { key: "b", name: "to_person_id" }, personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))),
+                    React.createElement("input", { key: "c", name: "relationship_type", required: true, placeholder: "parent_of" }),
+                    React.createElement("button", { key: "d", type: "submit", disabled: personOptions.length < 2 }, "Link"),
+                  ]),
+                  React.createElement("div", { className: "list", key: "l" },
+                    persons.map((p) => React.createElement("div", { className: "item", key: p.id }, `${p.full_name} (${p.religion || "N/A"})`))
+                  ),
+                ]),
+              ]) : null
             ]),
-            React.createElement("form", { className: "card", onSubmit: (e) => addRelationship(e).catch((x) => setStatus(x.message)), key: "rels" }, [
-              React.createElement("h3", { key: "h" }, "Relationships"),
-              React.createElement(
-                "select",
-                { key: "s1", name: "from_person_id" },
-                personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))
-              ),
-              React.createElement(
-                "select",
-                { key: "s2", name: "to_person_id" },
-                personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))
-              ),
-              React.createElement("input", { key: "i1", name: "relationship_type", required: true, placeholder: "parent_of" }),
-              React.createElement("button", { key: "b1", type: "submit", disabled: personOptions.length < 2 }, "Add Relationship"),
-              React.createElement("div", { className: "list", key: "list" }, relationships.map((r) =>
-                React.createElement("div", { className: "item", key: r.id }, `${r.relationship_type} ${r.from_person_id.slice(0,6)} -> ${r.to_person_id.slice(0,6)}`)
-              )),
+
+            React.createElement("main", { className: "graph-wrap", key: "center" }, [
+              React.createElement("div", { className: "status-badge", key: "st" }, status || "Ready"),
+              React.createElement("div", { className: "graph-scroll", key: "scroll", ref: graphViewportRef }, [
+                React.createElement("div", { style: { padding: "12px 12px 0 12px" }, key: "controls" }, [
+                  React.createElement("form", { onSubmit: (e) => loadSubgraph(e).catch((x) => setStatus(x.message)), key: "f" }, [
+                    React.createElement("div", { style: { display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: "8px" }, key: "g" }, [
+                      React.createElement("select", { key: "p", name: "root_person_id" }, personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))),
+                      React.createElement("select", { key: "d", name: "direction" }, [
+                        React.createElement("option", { key: "desc", value: "descendants" }, "descendants"),
+                        React.createElement("option", { key: "anc", value: "ancestors" }, "ancestors"),
+                      ]),
+                      React.createElement("input", { key: "depth", type: "number", name: "depth", min: 1, max: 10, defaultValue: 2 }),
+                      React.createElement("button", { key: "b", type: "submit", disabled: personOptions.length === 0 }, "Render Graph"),
+                    ])
+                  ])
+                ]),
+                React.createElement(GraphView, {
+                  key: "graph",
+                  subgraph,
+                  rootPersonId: lastRoot,
+                  zoom,
+                  selectedNodeId: selectedPersonId,
+                  highlightedNodeIds: highlightedNodeSet,
+                  highlightedEdgeKeys: highlightedEdgeSet,
+                  onNodeClick: applyPersonFocus,
+                }),
+              ])
             ]),
-            React.createElement("form", { className: "card", onSubmit: (e) => loadSubgraph(e).catch((x) => setStatus(x.message)), key: "subgraph-form" }, [
-              React.createElement("h3", { key: "h" }, "Subgraph Query"),
-              React.createElement(
-                "select",
-                { key: "s1", name: "root_person_id" },
-                personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))
-              ),
-              React.createElement(
-                "select",
-                { key: "s2", name: "direction" },
-                [
-                  React.createElement("option", { key: "desc", value: "descendants" }, "descendants"),
-                  React.createElement("option", { key: "anc", value: "ancestors" }, "ancestors")
-                ]
-              ),
-              React.createElement("input", { key: "i1", type: "number", name: "depth", min: 1, max: 10, defaultValue: 2 }),
-              React.createElement("button", { key: "b1", type: "submit", disabled: personOptions.length === 0 }, "Load Subgraph"),
-              React.createElement("div", { className: "muted", key: "m1" }, subgraph ? `${subgraph.persons.length} nodes, ${subgraph.relationships.length} edges` : "No subgraph loaded"),
-            ]),
-          ]),
-          React.createElement("div", { className: "grid", key: "bottom-grid" }, [
-            React.createElement("form", { className: "card", onSubmit: (e) => createChangeRequest(e).catch((x) => setStatus(x.message)), key: "cr" }, [
-              React.createElement("h3", { key: "h" }, "Change Requests"),
-              React.createElement(
-                "select",
-                { key: "s1", name: "entity_id" },
-                personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))
-              ),
-              React.createElement("input", { key: "i1", name: "religion", placeholder: "Proposed religion value" }),
-              React.createElement("button", { key: "b1", type: "submit", disabled: personOptions.length === 0 }, "Propose Change"),
-              React.createElement("div", { className: "list", key: "list" }, changeRequests.map((cr) =>
-                React.createElement("div", { className: "item", key: cr.id }, [
-                  React.createElement("div", { key: "s" }, `Status: ${cr.status}`),
-                  React.createElement("div", { className: "muted", key: "p" }, cr.proposed_patch_json),
-                  cr.status === "pending"
-                    ? React.createElement("div", { key: "actions" }, [
-                        React.createElement("button", { key: "a", type: "button", onClick: () => reviewRequest(cr.id, "approve").catch((x) => setStatus(x.message)) }, "Approve"),
-                        React.createElement("button", { key: "r", className: "secondary", type: "button", onClick: () => reviewRequest(cr.id, "reject").catch((x) => setStatus(x.message)) }, "Reject"),
+
+            React.createElement("aside", { className: `sidebar ${rightOpen ? "" : "collapsed"}`, key: "right" }, [
+              React.createElement("div", { className: "sidebar-head", key: "h" }, [
+                React.createElement("span", { key: "txt" }, "Collaboration & Context"),
+                React.createElement("button", { className: "btn", key: "b", onClick: () => setRightOpen((v) => !v) }, rightOpen ? "▶" : "◀"),
+              ]),
+              rightOpen ? React.createElement("div", { className: "sidebar-body", key: "body" }, [
+                React.createElement("details", { className: "card", open: true, key: "profile" }, [
+                  React.createElement("summary", { key: "s" }, "Selected Person"),
+                  selectedPerson
+                    ? React.createElement("div", { key: "p" }, [
+                        React.createElement("div", { style: { fontWeight: 700, marginBottom: "6px" }, key: "n" }, selectedPerson.full_name),
+                        React.createElement("div", { className: "muted", key: "r" }, `Religion: ${selectedPerson.religion || "N/A"}`),
+                        React.createElement("div", { className: "muted", key: "b" }, `Birth: ${selectedPerson.birth_date || "Unknown"} ${selectedPerson.birth_place ? "• " + selectedPerson.birth_place : ""}`),
+                        React.createElement("div", { className: "muted", key: "o" }, `Occupation: ${selectedPerson.occupation || "N/A"}`),
+                        React.createElement("div", { className: "muted", key: "h" }, `Hobbies: ${selectedPerson.hobbies || "N/A"}`),
                       ])
-                    : null
-                ])
-              ))
+                    : React.createElement("div", { className: "muted", key: "x" }, "Click a node to inspect profile details."),
+                ]),
+                React.createElement("details", { className: "card", key: "cr" }, [
+                  React.createElement("summary", { key: "s" }, "Change Requests"),
+                  React.createElement("form", { key: "f", onSubmit: (e) => createChangeRequest(e).catch((x) => setStatus(x.message)) }, [
+                    React.createElement("select", { key: "p", name: "entity_id" }, personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))),
+                    React.createElement("input", { key: "r", name: "religion", placeholder: "Proposed religion value" }),
+                    React.createElement("button", { key: "b", type: "submit", disabled: personOptions.length === 0 }, "Propose"),
+                  ]),
+                  React.createElement("div", { className: "list", key: "l" },
+                    changeRequests.map((cr) => React.createElement("div", { className: "item", key: cr.id }, [
+                      React.createElement("div", { key: "s" }, `Status: ${cr.status}`),
+                      React.createElement("div", { className: "muted", key: "p" }, cr.proposed_patch_json),
+                      cr.status === "pending" ? React.createElement("div", { key: "a", style: { marginTop: "6px" } }, [
+                        React.createElement("button", { key: "ap", type: "button", onClick: () => reviewRequest(cr.id, "approve").catch((x) => setStatus(x.message)) }, "Approve"),
+                        React.createElement("button", { key: "rj", type: "button", className: "ghost", onClick: () => reviewRequest(cr.id, "reject").catch((x) => setStatus(x.message)) }, "Reject"),
+                      ]) : null
+                    ]))
+                  ),
+                ]),
+                React.createElement("details", { className: "card", key: "ctx" }, [
+                  React.createElement("summary", { key: "s" }, "Context Events"),
+                  React.createElement("form", { key: "f", onSubmit: (e) => createContextEvent(e).catch((x) => setStatus(x.message)) }, [
+                    React.createElement("input", { key: "d", type: "date", name: "date", required: true }),
+                    React.createElement("input", { key: "t", name: "title", required: true, placeholder: "Event title" }),
+                    React.createElement("select", { key: "e", name: "event_type" }, [
+                      React.createElement("option", { key: "w", value: "world" }, "world"),
+                      React.createElement("option", { key: "p", value: "political" }, "political"),
+                      React.createElement("option", { key: "s", value: "social" }, "social"),
+                      React.createElement("option", { key: "t", value: "technology" }, "technology"),
+                      React.createElement("option", { key: "f", value: "family" }, "family"),
+                    ]),
+                    React.createElement("input", { key: "l", name: "location_name", placeholder: "Location" }),
+                    React.createElement("input", { key: "x", name: "description", placeholder: "Description" }),
+                    React.createElement("button", { key: "b", type: "submit", disabled: !selectedCircle }, "Add Event"),
+                  ]),
+                  React.createElement("form", { key: "lnk", onSubmit: (e) => linkEventToPerson(e).catch((x) => setStatus(x.message)) }, [
+                    React.createElement("select", { key: "p1", name: "person_id" }, personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))),
+                    React.createElement("select", { key: "e1", name: "context_event_id" }, contextEvents.map((e) => React.createElement("option", { key: e.id, value: e.id }, `${e.date} ${e.title}`))),
+                    React.createElement("input", { key: "rn", name: "relevance_note", placeholder: "Relevance note" }),
+                    React.createElement("button", { key: "b2", type: "submit", disabled: personOptions.length === 0 || contextEvents.length === 0 }, "Link Event"),
+                  ]),
+                  React.createElement("div", { className: "list", key: "lst" },
+                    contextEvents.map((e) => React.createElement("div", { className: "item", key: e.id }, `${e.date} • ${e.title}`))
+                  ),
+                ]),
+                React.createElement("details", { className: "card", key: "tl" }, [
+                  React.createElement("summary", { key: "s" }, "Timeline"),
+                  React.createElement("form", { key: "f", onSubmit: (e) => loadTimeline(e).catch((x) => setStatus(x.message)) }, [
+                    React.createElement("select", { key: "p", name: "person_id" }, personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))),
+                    React.createElement("button", { key: "b", type: "submit", disabled: personOptions.length === 0 }, "Load Timeline"),
+                  ]),
+                  React.createElement("div", { className: "list", key: "l" },
+                    timeline.map((t, i) => React.createElement(
+                      "div",
+                      {
+                        className: "item",
+                        key: `${t.date}-${i}`,
+                        onClick: () => onTimelineItemClick(t).catch((x) => setStatus(x.message)),
+                        style: { cursor: "pointer" }
+                      },
+                      [
+                        React.createElement("span", { className: "timeline-dot", style: { background: t.kind === "life" ? "#1e6c6d" : "#d18b3d" }, key: "dot" }),
+                        `${t.date} • ${t.title}`
+                      ]
+                    ))
+                  ),
+                ]),
+              ]) : null
             ]),
-            React.createElement("div", { className: "card", key: "graph-view" }, [
-              React.createElement("h3", { key: "h" }, "Graph Visualization"),
-              React.createElement("div", { className: "muted", key: "m" }, "Directed subgraph from selected root"),
-              React.createElement(GraphView, { key: "g", subgraph, rootPersonId: lastRoot }),
-            ]),
-            React.createElement("form", { className: "card", onSubmit: (e) => createContextEvent(e).catch((x) => setStatus(x.message)), key: "context-events" }, [
-              React.createElement("h3", { key: "h" }, "Context Events"),
-              React.createElement("input", { key: "d", name: "date", type: "date", required: true }),
-              React.createElement("input", { key: "t", name: "title", required: true, placeholder: "Event title" }),
-              React.createElement(
-                "select",
-                { key: "et", name: "event_type" },
-                [
-                  React.createElement("option", { key: "world", value: "world" }, "world"),
-                  React.createElement("option", { key: "political", value: "political" }, "political"),
-                  React.createElement("option", { key: "social", value: "social" }, "social"),
-                  React.createElement("option", { key: "technology", value: "technology" }, "technology"),
-                  React.createElement("option", { key: "family", value: "family" }, "family"),
-                ]
-              ),
-              React.createElement("input", { key: "loc", name: "location_name", placeholder: "Location" }),
-              React.createElement("input", { key: "desc", name: "description", placeholder: "Description" }),
-              React.createElement("button", { key: "b1", type: "submit", disabled: !selectedCircle }, "Add Event"),
-              React.createElement("div", { className: "list", key: "list" }, contextEvents.map((ev) =>
-                React.createElement("div", { className: "item", key: ev.id }, `${ev.date} • ${ev.title}`)
-              )),
-            ]),
-            React.createElement("form", { className: "card", onSubmit: (e) => linkEventToPerson(e).catch((x) => setStatus(x.message)), key: "context-links" }, [
-              React.createElement("h3", { key: "h" }, "Link Event to Person"),
-              React.createElement(
-                "select",
-                { key: "p", name: "person_id" },
-                personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))
-              ),
-              React.createElement(
-                "select",
-                { key: "ce", name: "context_event_id" },
-                contextEvents.map((ev) => React.createElement("option", { key: ev.id, value: ev.id }, `${ev.date} ${ev.title}`))
-              ),
-              React.createElement("input", { key: "rn", name: "relevance_note", placeholder: "Relevance note" }),
-              React.createElement("button", { key: "b1", type: "submit", disabled: personOptions.length === 0 || contextEvents.length === 0 }, "Link"),
-            ]),
-            React.createElement("form", { className: "card", onSubmit: (e) => loadTimeline(e).catch((x) => setStatus(x.message)), key: "timeline" }, [
-              React.createElement("h3", { key: "h" }, "Person Timeline"),
-              React.createElement(
-                "select",
-                { key: "p", name: "person_id" },
-                personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))
-              ),
-              React.createElement("button", { key: "b1", type: "submit", disabled: personOptions.length === 0 }, "Load Timeline"),
-              React.createElement("div", { className: "list", key: "list" }, timeline.map((t, idx) =>
-                React.createElement("div", { className: "item", key: `${t.date}-${idx}` }, `${t.date} • ${t.kind} • ${t.title}`)
-              )),
-            ]),
-          ]),
+          ])
         ]);
       }
 

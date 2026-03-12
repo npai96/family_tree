@@ -206,5 +206,16 @@ def test_context_events_and_person_timeline(tmp_path: Path) -> None:
     assert len(body) == 2
     assert body[0]["date"] == "1950-01-01"
     assert body[0]["kind"] == "life"
+    assert body[0]["ref_id"] == person_id
     assert body[1]["date"] == "1971-12-16"
     assert body[1]["kind"] == "context"
+    assert body[1]["ref_id"] == event_id
+
+    event_persons = client.get(
+        f"/circles/{circle_id}/context-events/{event_id}/persons",
+        headers={"X-User-Id": owner_id},
+    )
+    assert event_persons.status_code == 200
+    linked = event_persons.json()
+    assert len(linked) == 1
+    assert linked[0]["id"] == person_id
