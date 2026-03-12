@@ -11,6 +11,7 @@ import app.api.main as main
 
 def build_client(tmp_path: Path) -> TestClient:
     main.DB_PATH = tmp_path / "test.db"
+    main.MEDIA_DIR = tmp_path / "media"
     main.init_db()
     return TestClient(main.app)
 
@@ -219,3 +220,52 @@ def test_context_events_and_person_timeline(tmp_path: Path) -> None:
     linked = event_persons.json()
     assert len(linked) == 1
     assert linked[0]["id"] == person_id
+
+
+def test_media_upload_list_and_download(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    owner_id = create_user(client, "Owner")
+    editor_id = create_user(client, "Editor")
+
+    circle = client.post("/circles", json={"name": "Media Family"}, headers={"X-User-Id": owner_id})
+    circle_id = circle.json()["id"]
+    add_editor = client.post(
+        f"/circles/{circle_id}/members",
+        json={"user_id": editor_id, "role": "editor"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert add_editor.status_code == 200
+
+    person = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Media Person"},
+        headers={"X-User-Id": editor_id},
+    )
+    person_id = person.json()["id"]
+
+    upload = client.post(
+        f"/circles/{circle_id}/persons/{person_id}/media",
+        files={"file": ("note.txt", b"hello family media", "text/plain")},
+        headers={"X-User-Id": editor_id},
+    )
+    assert upload.status_code == 200
+    asset = upload.json()
+    asset_id = asset["id"]
+    assert asset["bytes"] > 0
+    assert asset["original_filename"] == "note.txt"
+
+    listed = client.get(
+        f"/circles/{circle_id}/persons/{person_id}/media",
+        headers={"X-User-Id": owner_id},
+    )
+    assert listed.status_code == 200
+    body = listed.json()
+    assert len(body) == 1
+    assert body[0]["id"] == asset_id
+
+    downloaded = client.get(
+        f"/circles/{circle_id}/media/{asset_id}/download",
+        headers={"X-User-Id": owner_id},
+    )
+    assert downloaded.status_code == 200
+    assert downloaded.content == b"hello family media"

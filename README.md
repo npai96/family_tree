@@ -30,6 +30,10 @@ Collaborative genealogy platform focused on South Asian family history with grap
   - click node to open profile details and highlight lineage path
   - zoom controls (`+`, `-`, `fit`, `1:1`)
   - timeline item click highlights related graph node(s)
+- Media MVP:
+  - upload file assets to a person profile
+  - list per-person media
+  - download/open stored media assets
 - API tests with `pytest`.
 
 ## Project Layout
@@ -66,3 +70,4 @@ make test
 - This increment uses SQLite for fast iteration.
 - Production plan remains Postgres + Neo4j + object storage media pipeline per `MVP_TECHNICAL_ARCHITECTURE.md`.
 - API authorization for MVP is simplified via `X-User-Id` header.
+- Media in this increment stores files locally under `app/media/` for localhost testing.

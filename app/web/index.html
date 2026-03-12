@@ -337,6 +337,7 @@
         const [changeRequests, setChangeRequests] = useState([]);
         const [contextEvents, setContextEvents] = useState([]);
         const [timeline, setTimeline] = useState([]);
+        const [personMedia, setPersonMedia] = useState([]);
         const [subgraph, setSubgraph] = useState(null);
         const [lastRoot, setLastRoot] = useState("");
         const [status, setStatus] = useState("");
@@ -618,6 +619,33 @@
           setStatus(`Loaded timeline with ${data.length} items`);
         }
 
+        async function loadPersonMedia(personId) {
+          if (!personId || !selectedCircle) return setPersonMedia([]);
+          const data = await requestJson(`/circles/${selectedCircle}/persons/${personId}/media`, { headers });
+          setPersonMedia(data);
+        }
+
+        async function uploadMedia(e) {
+          e.preventDefault();
+          const targetPersonId = e.target.person_id.value;
+          const chosen = e.target.file.files && e.target.file.files[0];
+          if (!targetPersonId || !chosen) return;
+          const form = new FormData();
+          form.append("file", chosen);
+          const res = await fetch(`/circles/${selectedCircle}/persons/${targetPersonId}/media`, {
+            method: "POST",
+            headers: activeUserId ? { "X-User-Id": activeUserId } : {},
+            body: form,
+          });
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({ detail: "Upload failed" }));
+            throw new Error(body.detail || "Upload failed");
+          }
+          setStatus("Media uploaded");
+          e.target.reset();
+          await loadPersonMedia(targetPersonId);
+        }
+
         async function onTimelineItemClick(item) {
           if (item.kind === "life" && item.ref_id) {
             applyPersonFocus(item.ref_id);
@@ -633,6 +661,11 @@
             setStatus(`Highlighted ${ids.length} linked person nodes`);
           }
         }
+
+        useEffect(() => {
+          if (!selectedPersonId) return setPersonMedia([]);
+          loadPersonMedia(selectedPersonId).catch((e) => setStatus(e.message));
+        }, [selectedPersonId, selectedCircle, activeUserId]);
 
         const gridCols = `${leftOpen ? "320px" : "44px"} 1fr ${rightOpen ? "340px" : "44px"}`;
 
@@ -768,6 +801,36 @@
                         React.createElement("div", { className: "muted", key: "h" }, `Hobbies: ${selectedPerson.hobbies || "N/A"}`),
                       ])
                     : React.createElement("div", { className: "muted", key: "x" }, "Click a node to inspect profile details."),
+                ]),
+                React.createElement("details", { className: "card", key: "media" }, [
+                  React.createElement("summary", { key: "s" }, "Media"),
+                  React.createElement("form", { key: "f", onSubmit: (e) => uploadMedia(e).catch((x) => setStatus(x.message)) }, [
+                    React.createElement(
+                      "select",
+                      { key: "p", name: "person_id", value: selectedPersonId, onChange: (e) => setSelectedPersonId(e.target.value) },
+                      personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))
+                    ),
+                    React.createElement("input", { key: "i", type: "file", name: "file" }),
+                    React.createElement("button", { key: "b", type: "submit", disabled: !selectedPersonId }, "Upload"),
+                  ]),
+                  React.createElement("div", { className: "list", key: "l" },
+                    personMedia.map((m) =>
+                      React.createElement("div", { className: "item", key: m.id }, [
+                        React.createElement("div", { key: "n" }, m.original_filename),
+                        React.createElement("div", { className: "muted", key: "x" }, `${m.bytes} bytes`),
+                        React.createElement(
+                          "a",
+                          {
+                            key: "d",
+                            href: `/circles/${selectedCircle}/media/${m.id}/download`,
+                            target: "_blank",
+                            rel: "noreferrer",
+                          },
+                          "Open"
+                        ),
+                      ])
+                    )
+                  ),
                 ]),
                 React.createElement("details", { className: "card", key: "cr" }, [
                   React.createElement("summary", { key: "s" }, "Change Requests"),

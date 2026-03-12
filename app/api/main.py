@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import json
+import shutil
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -10,7 +11,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 from uuid import uuid4
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
@@ -19,6 +20,7 @@ from pydantic import BaseModel, Field
 BASE_DIR = Path(__file__).resolve().parents[2]
 DB_PATH = BASE_DIR / "app" / "api" / "mvp.db"
 WEB_INDEX_PATH = BASE_DIR / "app" / "web" / "index.html"
+MEDIA_DIR = BASE_DIR / "app" / "media"
 
 
 def utc_now() -> str:
@@ -33,6 +35,7 @@ def get_conn() -> sqlite3.Connection:
 
 def init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    MEDIA_DIR.mkdir(parents=True, exist_ok=True)
     with get_conn() as conn:
         conn.executescript(
             """
@@ -136,6 +139,21 @@ def init_db() -> None:
               FOREIGN KEY (context_event_id) REFERENCES context_events(id) ON DELETE CASCADE,
               FOREIGN KEY (circle_id) REFERENCES circles(id) ON DELETE CASCADE,
               FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS media_assets (
+              id TEXT PRIMARY KEY,
+              circle_id TEXT NOT NULL,
+              person_id TEXT NOT NULL,
+              uploader_user_id TEXT NOT NULL,
+              original_filename TEXT NOT NULL,
+              stored_filename TEXT NOT NULL,
+              mime_type TEXT,
+              bytes INTEGER NOT NULL,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY (circle_id) REFERENCES circles(id) ON DELETE CASCADE,
+              FOREIGN KEY (person_id) REFERENCES persons(id) ON DELETE CASCADE,
+              FOREIGN KEY (uploader_user_id) REFERENCES users(id) ON DELETE CASCADE
             );
             """
         )
@@ -289,6 +307,18 @@ class TimelineItem(BaseModel):
     title: str
     detail: Optional[str] = None
     ref_id: Optional[str] = None
+
+
+class MediaAssetOut(BaseModel):
+    id: str
+    circle_id: str
+    person_id: str
+    uploader_user_id: str
+    original_filename: str
+    stored_filename: str
+    mime_type: Optional[str] = None
+    bytes: int
+    created_at: str
 
 
 class SubgraphOut(BaseModel):
@@ -575,6 +605,105 @@ def list_persons(circle_id: str, x_user_id: Optional[str] = Header(default=None)
             (circle_id,),
         ).fetchall()
     return [PersonOut(**dict(row)) for row in rows]
+
+
+@app.post("/circles/{circle_id}/persons/{person_id}/media", response_model=MediaAssetOut)
+async def upload_person_media(
+    circle_id: str,
+    person_id: str,
+    file: UploadFile = File(...),
+    x_user_id: Optional[str] = Header(default=None),
+) -> MediaAssetOut:
+    asset_id = str(uuid4())
+    now = utc_now()
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        person = conn.execute(
+            "SELECT id FROM persons WHERE id = ? AND circle_id = ?",
+            (person_id, circle_id),
+        ).fetchone()
+        if not person:
+            raise HTTPException(status_code=404, detail="Person not found in circle")
+
+    person_dir = MEDIA_DIR / circle_id / person_id
+    person_dir.mkdir(parents=True, exist_ok=True)
+    original_name = file.filename or "upload.bin"
+    stored_name = f"{asset_id}_{original_name}"
+    stored_path = person_dir / stored_name
+
+    with stored_path.open("wb") as out:
+        shutil.copyfileobj(file.file, out)
+    bytes_size = stored_path.stat().st_size
+
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO media_assets (
+              id, circle_id, person_id, uploader_user_id, original_filename, stored_filename, mime_type, bytes, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                asset_id,
+                circle_id,
+                person_id,
+                actor_user_id,
+                original_name,
+                stored_name,
+                file.content_type,
+                bytes_size,
+                now,
+            ),
+        )
+        row = conn.execute("SELECT * FROM media_assets WHERE id = ?", (asset_id,)).fetchone()
+    return MediaAssetOut(**dict(row))
+
+
+@app.get("/circles/{circle_id}/persons/{person_id}/media", response_model=list[MediaAssetOut])
+def list_person_media(
+    circle_id: str,
+    person_id: str,
+    x_user_id: Optional[str] = Header(default=None),
+) -> list[MediaAssetOut]:
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _get_role(conn, circle_id, actor_user_id)
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM media_assets
+            WHERE circle_id = ? AND person_id = ?
+            ORDER BY created_at DESC
+            """,
+            (circle_id, person_id),
+        ).fetchall()
+    return [MediaAssetOut(**dict(row)) for row in rows]
+
+
+@app.get("/circles/{circle_id}/media/{asset_id}/download")
+def download_media(
+    circle_id: str,
+    asset_id: str,
+    x_user_id: Optional[str] = Header(default=None),
+) -> FileResponse:
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _get_role(conn, circle_id, actor_user_id)
+        row = conn.execute(
+            "SELECT * FROM media_assets WHERE id = ? AND circle_id = ?",
+            (asset_id, circle_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Media asset not found")
+
+    file_path = MEDIA_DIR / circle_id / row["person_id"] / row["stored_filename"]
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Media file missing on disk")
+    return FileResponse(
+        file_path,
+        media_type=row["mime_type"] or "application/octet-stream",
+        filename=row["original_filename"],
+    )
 
 
 @app.post("/circles/{circle_id}/relationships", response_model=RelationshipOut)
