@@ -270,6 +270,13 @@ def test_media_upload_list_and_download(tmp_path: Path) -> None:
     assert downloaded.status_code == 200
     assert downloaded.content == b"hello family media"
 
+    downloaded_via_query = client.get(
+        f"/circles/{circle_id}/media/{asset_id}/download",
+        params={"user_id": owner_id},
+    )
+    assert downloaded_via_query.status_code == 200
+    assert downloaded_via_query.content == b"hello family media"
+
 
 def test_person_places_and_migration_geojson(tmp_path: Path) -> None:
     client = build_client(tmp_path)
@@ -337,3 +344,59 @@ def test_person_places_and_migration_geojson(tmp_path: Path) -> None:
     assert fc["type"] == "FeatureCollection"
     assert len(fc["features"]) == 3  # one line + two points
     assert fc["features"][0]["geometry"]["type"] == "LineString"
+
+
+def test_discussion_threads_messages_and_ws(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    owner_id = create_user(client, "Owner")
+    editor_id = create_user(client, "Editor")
+
+    circle = client.post("/circles", json={"name": "Chat Family"}, headers={"X-User-Id": owner_id})
+    circle_id = circle.json()["id"]
+    add_editor = client.post(
+        f"/circles/{circle_id}/members",
+        json={"user_id": editor_id, "role": "editor"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert add_editor.status_code == 200
+
+    person = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Chat Person"},
+        headers={"X-User-Id": editor_id},
+    )
+    person_id = person.json()["id"]
+
+    thread = client.post(
+        f"/circles/{circle_id}/threads",
+        json={"entity_type": "person", "entity_id": person_id},
+        headers={"X-User-Id": owner_id},
+    )
+    assert thread.status_code == 200
+    thread_id = thread.json()["id"]
+
+    with client.websocket_connect(f"/ws/circles/{circle_id}?user_id={owner_id}") as ws:
+        joined = ws.receive_json()
+        assert joined["type"] == "presence.updated"
+        assert joined["state"] == "joined"
+
+        msg = client.post(
+            f"/circles/{circle_id}/threads/{thread_id}/messages",
+            json={"content": "Oral history note"},
+            headers={"X-User-Id": editor_id},
+        )
+        assert msg.status_code == 200
+
+        event = ws.receive_json()
+        assert event["type"] == "thread.message.created"
+        assert event["thread_id"] == thread_id
+        assert event["message"]["content"] == "Oral history note"
+
+    listed = client.get(
+        f"/circles/{circle_id}/threads/{thread_id}/messages",
+        headers={"X-User-Id": owner_id},
+    )
+    assert listed.status_code == 200
+    rows = listed.json()
+    assert len(rows) == 1
+    assert rows[0]["content"] == "Oral history note"

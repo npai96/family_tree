@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 from uuid import uuid4
 
-from fastapi import FastAPI, Header, HTTPException, Query, UploadFile, File
+from fastapi import FastAPI, Header, HTTPException, Query, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
@@ -172,6 +172,28 @@ def init_db() -> None:
               FOREIGN KEY (circle_id) REFERENCES circles(id) ON DELETE CASCADE,
               FOREIGN KEY (person_id) REFERENCES persons(id) ON DELETE CASCADE,
               FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS discussion_threads (
+              id TEXT PRIMARY KEY,
+              circle_id TEXT NOT NULL,
+              entity_type TEXT NOT NULL,
+              entity_id TEXT NOT NULL,
+              created_by TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              UNIQUE (circle_id, entity_type, entity_id),
+              FOREIGN KEY (circle_id) REFERENCES circles(id) ON DELETE CASCADE,
+              FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS discussion_messages (
+              id TEXT PRIMARY KEY,
+              thread_id TEXT NOT NULL,
+              sender_user_id TEXT NOT NULL,
+              content TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY (thread_id) REFERENCES discussion_threads(id) ON DELETE CASCADE,
+              FOREIGN KEY (sender_user_id) REFERENCES users(id) ON DELETE CASCADE
             );
             """
         )
@@ -352,6 +374,32 @@ class PersonPlaceOut(BaseModel):
     created_at: str
 
 
+class DiscussionThreadCreate(BaseModel):
+    entity_type: Literal["person", "relationship", "change_request"]
+    entity_id: str
+
+
+class DiscussionThreadOut(BaseModel):
+    id: str
+    circle_id: str
+    entity_type: str
+    entity_id: str
+    created_by: str
+    created_at: str
+
+
+class DiscussionMessageCreate(BaseModel):
+    content: str = Field(min_length=1, max_length=4000)
+
+
+class DiscussionMessageOut(BaseModel):
+    id: str
+    thread_id: str
+    sender_user_id: str
+    content: str
+    created_at: str
+
+
 class MediaAssetOut(BaseModel):
     id: str
     circle_id: str
@@ -376,6 +424,36 @@ class Edge:
     to_person_id: str
     relationship_type: str
     created_at: str
+
+
+class CircleWSManager:
+    def __init__(self) -> None:
+        self.connections: dict[str, set[WebSocket]] = {}
+
+    async def connect(self, circle_id: str, ws: WebSocket) -> None:
+        await ws.accept()
+        self.connections.setdefault(circle_id, set()).add(ws)
+
+    def disconnect(self, circle_id: str, ws: WebSocket) -> None:
+        if circle_id not in self.connections:
+            return
+        self.connections[circle_id].discard(ws)
+        if not self.connections[circle_id]:
+            self.connections.pop(circle_id, None)
+
+    async def broadcast(self, circle_id: str, payload: dict[str, Any]) -> None:
+        peers = list(self.connections.get(circle_id, set()))
+        stale: list[WebSocket] = []
+        for ws in peers:
+            try:
+                await ws.send_json(payload)
+            except Exception:
+                stale.append(ws)
+        for ws in stale:
+            self.disconnect(circle_id, ws)
+
+
+ws_manager = CircleWSManager()
 
 
 def _require_user(conn: sqlite3.Connection, user_id: Optional[str]) -> str:
@@ -491,6 +569,28 @@ def web_app() -> FileResponse:
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon() -> Response:
     return Response(status_code=204)
+
+
+@app.websocket("/ws/circles/{circle_id}")
+async def circle_ws(circle_id: str, websocket: WebSocket, user_id: str) -> None:
+    with get_conn() as conn:
+        _require_user(conn, user_id)
+        _get_role(conn, circle_id, user_id)
+
+    await ws_manager.connect(circle_id, websocket)
+    await ws_manager.broadcast(
+        circle_id,
+        {"type": "presence.updated", "circle_id": circle_id, "user_id": user_id, "state": "joined"},
+    )
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        ws_manager.disconnect(circle_id, websocket)
+        await ws_manager.broadcast(
+            circle_id,
+            {"type": "presence.updated", "circle_id": circle_id, "user_id": user_id, "state": "left"},
+        )
 
 
 @app.post("/users", response_model=UserOut)
@@ -850,10 +950,12 @@ def list_person_media(
 def download_media(
     circle_id: str,
     asset_id: str,
+    user_id: Optional[str] = Query(default=None),
     x_user_id: Optional[str] = Header(default=None),
 ) -> FileResponse:
+    auth_user_id = x_user_id or user_id
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_user(conn, auth_user_id)
         _get_role(conn, circle_id, actor_user_id)
         row = conn.execute(
             "SELECT * FROM media_assets WHERE id = ? AND circle_id = ?",
@@ -1185,6 +1287,110 @@ def get_subgraph(
         for edge in seen_edges.values()
     ]
     return SubgraphOut(persons=persons, relationships=rels)
+
+
+@app.post("/circles/{circle_id}/threads", response_model=DiscussionThreadOut)
+async def create_or_get_thread(
+    circle_id: str,
+    payload: DiscussionThreadCreate,
+    x_user_id: Optional[str] = Header(default=None),
+) -> DiscussionThreadOut:
+    thread_id = str(uuid4())
+    now = utc_now()
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _get_role(conn, circle_id, actor_user_id)
+        existing = conn.execute(
+            """
+            SELECT id, circle_id, entity_type, entity_id, created_by, created_at
+            FROM discussion_threads
+            WHERE circle_id = ? AND entity_type = ? AND entity_id = ?
+            """,
+            (circle_id, payload.entity_type, payload.entity_id),
+        ).fetchone()
+        if existing:
+            return DiscussionThreadOut(**dict(existing))
+        conn.execute(
+            """
+            INSERT INTO discussion_threads (id, circle_id, entity_type, entity_id, created_by, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (thread_id, circle_id, payload.entity_type, payload.entity_id, actor_user_id, now),
+        )
+        row = conn.execute(
+            "SELECT id, circle_id, entity_type, entity_id, created_by, created_at FROM discussion_threads WHERE id = ?",
+            (thread_id,),
+        ).fetchone()
+    out = DiscussionThreadOut(**dict(row))
+    await ws_manager.broadcast(
+        circle_id,
+        {"type": "thread.created", "circle_id": circle_id, "thread": out.model_dump()},
+    )
+    return out
+
+
+@app.get("/circles/{circle_id}/threads/{thread_id}/messages", response_model=list[DiscussionMessageOut])
+def list_thread_messages(
+    circle_id: str,
+    thread_id: str,
+    x_user_id: Optional[str] = Header(default=None),
+) -> list[DiscussionMessageOut]:
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _get_role(conn, circle_id, actor_user_id)
+        thread = conn.execute(
+            "SELECT id FROM discussion_threads WHERE id = ? AND circle_id = ?",
+            (thread_id, circle_id),
+        ).fetchone()
+        if not thread:
+            raise HTTPException(status_code=404, detail="Thread not found")
+        rows = conn.execute(
+            """
+            SELECT id, thread_id, sender_user_id, content, created_at
+            FROM discussion_messages
+            WHERE thread_id = ?
+            ORDER BY created_at ASC
+            """,
+            (thread_id,),
+        ).fetchall()
+    return [DiscussionMessageOut(**dict(row)) for row in rows]
+
+
+@app.post("/circles/{circle_id}/threads/{thread_id}/messages", response_model=DiscussionMessageOut)
+async def create_thread_message(
+    circle_id: str,
+    thread_id: str,
+    payload: DiscussionMessageCreate,
+    x_user_id: Optional[str] = Header(default=None),
+) -> DiscussionMessageOut:
+    message_id = str(uuid4())
+    now = utc_now()
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _get_role(conn, circle_id, actor_user_id)
+        thread = conn.execute(
+            "SELECT id FROM discussion_threads WHERE id = ? AND circle_id = ?",
+            (thread_id, circle_id),
+        ).fetchone()
+        if not thread:
+            raise HTTPException(status_code=404, detail="Thread not found")
+        conn.execute(
+            """
+            INSERT INTO discussion_messages (id, thread_id, sender_user_id, content, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (message_id, thread_id, actor_user_id, payload.content.strip(), now),
+        )
+        row = conn.execute(
+            "SELECT id, thread_id, sender_user_id, content, created_at FROM discussion_messages WHERE id = ?",
+            (message_id,),
+        ).fetchone()
+    out = DiscussionMessageOut(**dict(row))
+    await ws_manager.broadcast(
+        circle_id,
+        {"type": "thread.message.created", "circle_id": circle_id, "thread_id": thread_id, "message": out.model_dump()},
+    )
+    return out
 
 
 @app.post("/circles/{circle_id}/change-requests", response_model=ChangeRequestOut)

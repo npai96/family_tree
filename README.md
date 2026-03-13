@@ -38,6 +38,10 @@ Collaborative genealogy platform focused on South Asian family history with grap
   - add per-person lived places with coordinates/date ranges
   - map preview for selected place
   - export person migration path as GeoJSON
+- Collaboration MVP:
+  - per-entity discussion threads (currently person-scoped in UI)
+  - thread message APIs
+  - realtime message updates over circle WebSocket channels
 - API tests with `pytest`.
 
 ## Project Layout
@@ -75,3 +79,4 @@ make test
 - Production plan remains Postgres + Neo4j + object storage media pipeline per `MVP_TECHNICAL_ARCHITECTURE.md`.
 - API authorization for MVP is simplified via `X-User-Id` header.
 - Media in this increment stores files locally under `app/media/` for localhost testing.
+- Realtime WebSocket features require a websocket backend (`websockets` package included in `requirements.txt`).

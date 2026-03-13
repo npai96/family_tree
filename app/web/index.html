@@ -345,6 +345,8 @@
         const [personPlaces, setPersonPlaces] = useState([]);
         const [selectedPlace, setSelectedPlace] = useState(null);
         const [migrationGeoJson, setMigrationGeoJson] = useState(null);
+        const [discussionThreadId, setDiscussionThreadId] = useState("");
+        const [discussionMessages, setDiscussionMessages] = useState([]);
         const [subgraph, setSubgraph] = useState(null);
         const [lastRoot, setLastRoot] = useState("");
         const [status, setStatus] = useState("");
@@ -632,6 +634,38 @@
           setPersonMedia(data);
         }
 
+        async function ensurePersonThread(personId) {
+          if (!personId || !selectedCircle) {
+            setDiscussionThreadId("");
+            setDiscussionMessages([]);
+            return;
+          }
+          const thread = await requestJson(`/circles/${selectedCircle}/threads`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ entity_type: "person", entity_id: personId }),
+          });
+          setDiscussionThreadId(thread.id);
+          const messages = await requestJson(`/circles/${selectedCircle}/threads/${thread.id}/messages`, { headers });
+          setDiscussionMessages(messages);
+        }
+
+        async function sendDiscussionMessage(e) {
+          e.preventDefault();
+          if (!discussionThreadId) {
+            setStatus("Select a person to start discussion");
+            return;
+          }
+          const content = e.target.content.value.trim();
+          if (!content) return;
+          await requestJson(`/circles/${selectedCircle}/threads/${discussionThreadId}/messages`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ content }),
+          });
+          e.target.reset();
+        }
+
         async function uploadMedia(e) {
           e.preventDefault();
           const targetPersonId = e.target.person_id.value;
@@ -721,16 +755,38 @@
             setPersonPlaces([]);
             setSelectedPlace(null);
             setMigrationGeoJson(null);
+            setDiscussionThreadId("");
+            setDiscussionMessages([]);
             return;
           }
           loadPersonMedia(selectedPersonId).catch((e) => setStatus(e.message));
           loadPersonPlaces(selectedPersonId).catch((e) => setStatus(e.message));
+          ensurePersonThread(selectedPersonId).catch((e) => setStatus(e.message));
         }, [selectedPersonId, selectedCircle, activeUserId]);
         useEffect(() => {
           if (!selectedPersonId && personOptions.length > 0) {
             setSelectedPersonId(personOptions[0].value);
           }
         }, [personOptions, selectedPersonId]);
+        useEffect(() => {
+          if (!selectedCircle || !activeUserId) return undefined;
+          const proto = window.location.protocol === "https:" ? "wss" : "ws";
+          const ws = new WebSocket(`${proto}://${window.location.host}/ws/circles/${selectedCircle}?user_id=${activeUserId}`);
+          ws.onmessage = (evt) => {
+            try {
+              const data = JSON.parse(evt.data);
+              if (data.type === "thread.message.created" && data.thread_id === discussionThreadId) {
+                setDiscussionMessages((prev) => prev.concat([data.message]));
+              }
+            } catch (_) {
+              // ignore malformed websocket payloads
+            }
+          };
+          ws.onerror = () => {
+            setStatus("Realtime channel disconnected");
+          };
+          return () => ws.close();
+        }, [selectedCircle, activeUserId, discussionThreadId]);
 
         const gridCols = `${leftOpen ? "320px" : "44px"} 1fr ${rightOpen ? "340px" : "44px"}`;
 
@@ -867,6 +923,23 @@
                       ])
                     : React.createElement("div", { className: "muted", key: "x" }, "Click a node to inspect profile details."),
                 ]),
+                React.createElement("details", { className: "card", key: "discussion" }, [
+                  React.createElement("summary", { key: "s" }, "Discussion"),
+                  React.createElement("div", { className: "muted", key: "hint" }, selectedPerson ? `Thread for ${selectedPerson.full_name}` : "Select a person to open discussion"),
+                  React.createElement("form", { key: "f", onSubmit: (e) => sendDiscussionMessage(e).catch((x) => setStatus(x.message)) }, [
+                    React.createElement("input", { key: "i", name: "content", placeholder: "Add family memory or note..." }),
+                    React.createElement("button", { key: "b", type: "submit", disabled: !discussionThreadId }, "Send"),
+                  ]),
+                  React.createElement("div", { className: "list", key: "l" },
+                    discussionMessages.map((m) => {
+                      const sender = users.find((u) => u.id === m.sender_user_id);
+                      return React.createElement("div", { className: "item", key: m.id }, [
+                        React.createElement("div", { key: "c" }, m.content),
+                        React.createElement("div", { className: "muted", key: "m" }, `${sender ? sender.display_name : m.sender_user_id.slice(0, 8)} • ${m.created_at.slice(0, 19).replace("T", " ")}`),
+                      ]);
+                    })
+                  ),
+                ]),
                 React.createElement("details", { className: "card", key: "media" }, [
                   React.createElement("summary", { key: "s" }, "Media"),
                   React.createElement("form", { key: "f", onSubmit: (e) => uploadMedia(e).catch((x) => setStatus(x.message)) }, [
@@ -887,7 +960,7 @@
                           "a",
                           {
                             key: "d",
-                            href: `/circles/${selectedCircle}/media/${m.id}/download`,
+                            href: `/circles/${selectedCircle}/media/${m.id}/download?user_id=${encodeURIComponent(activeUserId || "")}`,
                             target: "_blank",
                             rel: "noreferrer",
                           },
