@@ -7,3 +7,4 @@ build/
 *.log
 .venv/
 app/api/mvp.db
+app/media/

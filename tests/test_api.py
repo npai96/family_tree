@@ -269,3 +269,71 @@ def test_media_upload_list_and_download(tmp_path: Path) -> None:
     )
     assert downloaded.status_code == 200
     assert downloaded.content == b"hello family media"
+
+
+def test_person_places_and_migration_geojson(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    owner_id = create_user(client, "Owner")
+    editor_id = create_user(client, "Editor")
+
+    circle = client.post("/circles", json={"name": "Migration Family"}, headers={"X-User-Id": owner_id})
+    circle_id = circle.json()["id"]
+    add_editor = client.post(
+        f"/circles/{circle_id}/members",
+        json={"user_id": editor_id, "role": "editor"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert add_editor.status_code == 200
+
+    person = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Arun Pai"},
+        headers={"X-User-Id": editor_id},
+    )
+    person_id = person.json()["id"]
+
+    place1 = client.post(
+        f"/circles/{circle_id}/persons/{person_id}/places",
+        json={
+            "place_name": "Udupi",
+            "country": "India",
+            "lat": 13.3409,
+            "lng": 74.7421,
+            "from_date": "1960-01-01",
+        },
+        headers={"X-User-Id": editor_id},
+    )
+    assert place1.status_code == 200
+
+    place2 = client.post(
+        f"/circles/{circle_id}/persons/{person_id}/places",
+        json={
+            "place_name": "Singapore",
+            "country": "Singapore",
+            "lat": 1.3521,
+            "lng": 103.8198,
+            "from_date": "1980-01-01",
+        },
+        headers={"X-User-Id": editor_id},
+    )
+    assert place2.status_code == 200
+
+    listed = client.get(
+        f"/circles/{circle_id}/persons/{person_id}/places",
+        headers={"X-User-Id": owner_id},
+    )
+    assert listed.status_code == 200
+    rows = listed.json()
+    assert len(rows) == 2
+    assert rows[0]["place_name"] == "Udupi"
+    assert rows[1]["place_name"] == "Singapore"
+
+    geojson = client.get(
+        f"/circles/{circle_id}/persons/{person_id}/migration-geojson",
+        headers={"X-User-Id": owner_id},
+    )
+    assert geojson.status_code == 200
+    fc = geojson.json()
+    assert fc["type"] == "FeatureCollection"
+    assert len(fc["features"]) == 3  # one line + two points
+    assert fc["features"][0]["geometry"]["type"] == "LineString"

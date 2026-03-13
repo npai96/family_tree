@@ -34,6 +34,10 @@ Collaborative genealogy platform focused on South Asian family history with grap
   - upload file assets to a person profile
   - list per-person media
   - download/open stored media assets
+- Places and migration MVP:
+  - add per-person lived places with coordinates/date ranges
+  - map preview for selected place
+  - export person migration path as GeoJSON
 - API tests with `pytest`.
 
 ## Project Layout

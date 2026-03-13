@@ -155,6 +155,24 @@ def init_db() -> None:
               FOREIGN KEY (person_id) REFERENCES persons(id) ON DELETE CASCADE,
               FOREIGN KEY (uploader_user_id) REFERENCES users(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS person_places (
+              id TEXT PRIMARY KEY,
+              circle_id TEXT NOT NULL,
+              person_id TEXT NOT NULL,
+              place_name TEXT NOT NULL,
+              country TEXT,
+              lat REAL,
+              lng REAL,
+              from_date TEXT,
+              to_date TEXT,
+              notes TEXT,
+              created_by TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY (circle_id) REFERENCES circles(id) ON DELETE CASCADE,
+              FOREIGN KEY (person_id) REFERENCES persons(id) ON DELETE CASCADE,
+              FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+            );
             """
         )
 
@@ -307,6 +325,31 @@ class TimelineItem(BaseModel):
     title: str
     detail: Optional[str] = None
     ref_id: Optional[str] = None
+
+
+class PersonPlaceCreate(BaseModel):
+    place_name: str = Field(min_length=1, max_length=200)
+    country: Optional[str] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    from_date: Optional[str] = None
+    to_date: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class PersonPlaceOut(BaseModel):
+    id: str
+    circle_id: str
+    person_id: str
+    place_name: str
+    country: Optional[str] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    from_date: Optional[str] = None
+    to_date: Optional[str] = None
+    notes: Optional[str] = None
+    created_by: str
+    created_at: str
 
 
 class MediaAssetOut(BaseModel):
@@ -605,6 +648,129 @@ def list_persons(circle_id: str, x_user_id: Optional[str] = Header(default=None)
             (circle_id,),
         ).fetchall()
     return [PersonOut(**dict(row)) for row in rows]
+
+
+@app.post("/circles/{circle_id}/persons/{person_id}/places", response_model=PersonPlaceOut)
+def create_person_place(
+    circle_id: str,
+    person_id: str,
+    payload: PersonPlaceCreate,
+    x_user_id: Optional[str] = Header(default=None),
+) -> PersonPlaceOut:
+    place_id = str(uuid4())
+    now = utc_now()
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        person = conn.execute(
+            "SELECT id FROM persons WHERE id = ? AND circle_id = ?",
+            (person_id, circle_id),
+        ).fetchone()
+        if not person:
+            raise HTTPException(status_code=404, detail="Person not found in circle")
+
+        conn.execute(
+            """
+            INSERT INTO person_places (
+              id, circle_id, person_id, place_name, country, lat, lng, from_date, to_date, notes, created_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                place_id,
+                circle_id,
+                person_id,
+                payload.place_name.strip(),
+                payload.country,
+                payload.lat,
+                payload.lng,
+                payload.from_date,
+                payload.to_date,
+                payload.notes,
+                actor_user_id,
+                now,
+            ),
+        )
+        row = conn.execute("SELECT * FROM person_places WHERE id = ?", (place_id,)).fetchone()
+    return PersonPlaceOut(**dict(row))
+
+
+@app.get("/circles/{circle_id}/persons/{person_id}/places", response_model=list[PersonPlaceOut])
+def list_person_places(
+    circle_id: str,
+    person_id: str,
+    x_user_id: Optional[str] = Header(default=None),
+) -> list[PersonPlaceOut]:
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _get_role(conn, circle_id, actor_user_id)
+        person = conn.execute(
+            "SELECT id FROM persons WHERE id = ? AND circle_id = ?",
+            (person_id, circle_id),
+        ).fetchone()
+        if not person:
+            raise HTTPException(status_code=404, detail="Person not found in circle")
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM person_places
+            WHERE circle_id = ? AND person_id = ?
+            ORDER BY COALESCE(from_date, created_at) ASC, created_at ASC
+            """,
+            (circle_id, person_id),
+        ).fetchall()
+    return [PersonPlaceOut(**dict(row)) for row in rows]
+
+
+@app.get("/circles/{circle_id}/persons/{person_id}/migration-geojson")
+def person_migration_geojson(
+    circle_id: str,
+    person_id: str,
+    x_user_id: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _get_role(conn, circle_id, actor_user_id)
+        person = conn.execute(
+            "SELECT full_name FROM persons WHERE id = ? AND circle_id = ?",
+            (person_id, circle_id),
+        ).fetchone()
+        if not person:
+            raise HTTPException(status_code=404, detail="Person not found in circle")
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM person_places
+            WHERE circle_id = ? AND person_id = ? AND lat IS NOT NULL AND lng IS NOT NULL
+            ORDER BY COALESCE(from_date, created_at) ASC, created_at ASC
+            """,
+            (circle_id, person_id),
+        ).fetchall()
+
+    coords = [[float(r["lng"]), float(r["lat"])] for r in rows]
+    point_features = [
+        {
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [float(r["lng"]), float(r["lat"])]},
+            "properties": {
+                "place_name": r["place_name"],
+                "country": r["country"],
+                "from_date": r["from_date"],
+                "to_date": r["to_date"],
+                "notes": r["notes"],
+            },
+        }
+        for r in rows
+    ]
+    features: list[dict[str, Any]] = point_features
+    if len(coords) >= 2:
+        features = [
+            {
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": coords},
+                "properties": {"person_id": person_id, "full_name": person["full_name"]},
+            }
+        ] + point_features
+    return {"type": "FeatureCollection", "features": features}
 
 
 @app.post("/circles/{circle_id}/persons/{person_id}/media", response_model=MediaAssetOut)
@@ -923,6 +1089,15 @@ def get_person_timeline(
             """,
             (circle_id, person_id),
         ).fetchall()
+        place_rows = conn.execute(
+            """
+            SELECT *
+            FROM person_places
+            WHERE circle_id = ? AND person_id = ? AND from_date IS NOT NULL
+            ORDER BY from_date ASC, created_at ASC
+            """,
+            (circle_id, person_id),
+        ).fetchall()
 
     timeline: list[TimelineItem] = []
     if person["birth_date"]:
@@ -943,6 +1118,16 @@ def get_person_timeline(
                 title=row["title"],
                 detail=row["description"],
                 ref_id=row["id"],
+            )
+        )
+    for row in place_rows:
+        timeline.append(
+            TimelineItem(
+                date=row["from_date"],
+                kind="life",
+                title=f"Moved to {row['place_name']}",
+                detail=row["country"],
+                ref_id=person_id,
             )
         )
     if person["death_date"]:

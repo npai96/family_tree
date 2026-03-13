@@ -116,6 +116,10 @@
         font-weight: 700;
         cursor: pointer;
       }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
       .ghost {
         background: #516171;
       }
@@ -338,6 +342,9 @@
         const [contextEvents, setContextEvents] = useState([]);
         const [timeline, setTimeline] = useState([]);
         const [personMedia, setPersonMedia] = useState([]);
+        const [personPlaces, setPersonPlaces] = useState([]);
+        const [selectedPlace, setSelectedPlace] = useState(null);
+        const [migrationGeoJson, setMigrationGeoJson] = useState(null);
         const [subgraph, setSubgraph] = useState(null);
         const [lastRoot, setLastRoot] = useState("");
         const [status, setStatus] = useState("");
@@ -646,6 +653,52 @@
           await loadPersonMedia(targetPersonId);
         }
 
+        async function loadPersonPlaces(personId) {
+          if (!personId || !selectedCircle) {
+            setPersonPlaces([]);
+            setSelectedPlace(null);
+            return;
+          }
+          const data = await requestJson(`/circles/${selectedCircle}/persons/${personId}/places`, { headers });
+          setPersonPlaces(data);
+          setSelectedPlace(data.length ? data[0] : null);
+        }
+
+        async function addPersonPlace(e) {
+          e.preventDefault();
+          const targetPersonId = e.target.person_id.value;
+          if (!targetPersonId) {
+            setStatus("Select a person before adding a place");
+            return;
+          }
+          await requestJson(`/circles/${selectedCircle}/persons/${targetPersonId}/places`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              place_name: e.target.place_name.value.trim(),
+              country: e.target.country.value.trim() || null,
+              lat: e.target.lat.value ? Number(e.target.lat.value) : null,
+              lng: e.target.lng.value ? Number(e.target.lng.value) : null,
+              from_date: e.target.from_date.value || null,
+              to_date: e.target.to_date.value || null,
+              notes: e.target.notes.value.trim() || null,
+            }),
+          });
+          setStatus("Place added");
+          e.target.reset();
+          await loadPersonPlaces(targetPersonId);
+        }
+
+        async function loadMigrationGeojson(personId) {
+          if (!personId) {
+            setStatus("Select a person before loading migration GeoJSON");
+            return;
+          }
+          const data = await requestJson(`/circles/${selectedCircle}/persons/${personId}/migration-geojson`, { headers });
+          setMigrationGeoJson(data);
+          setStatus(`Loaded migration GeoJSON with ${data.features.length} features`);
+        }
+
         async function onTimelineItemClick(item) {
           if (item.kind === "life" && item.ref_id) {
             applyPersonFocus(item.ref_id);
@@ -663,9 +716,21 @@
         }
 
         useEffect(() => {
-          if (!selectedPersonId) return setPersonMedia([]);
+          if (!selectedPersonId) {
+            setPersonMedia([]);
+            setPersonPlaces([]);
+            setSelectedPlace(null);
+            setMigrationGeoJson(null);
+            return;
+          }
           loadPersonMedia(selectedPersonId).catch((e) => setStatus(e.message));
+          loadPersonPlaces(selectedPersonId).catch((e) => setStatus(e.message));
         }, [selectedPersonId, selectedCircle, activeUserId]);
+        useEffect(() => {
+          if (!selectedPersonId && personOptions.length > 0) {
+            setSelectedPersonId(personOptions[0].value);
+          }
+        }, [personOptions, selectedPersonId]);
 
         const gridCols = `${leftOpen ? "320px" : "44px"} 1fr ${rightOpen ? "340px" : "44px"}`;
 
@@ -831,6 +896,61 @@
                       ])
                     )
                   ),
+                ]),
+                React.createElement("details", { className: "card", key: "places" }, [
+                  React.createElement("summary", { key: "s" }, "Places & Migration"),
+                  React.createElement("form", { key: "f", onSubmit: (e) => addPersonPlace(e).catch((x) => setStatus(x.message)) }, [
+                    React.createElement(
+                      "select",
+                      { key: "p", name: "person_id", value: selectedPersonId, onChange: (e) => setSelectedPersonId(e.target.value) },
+                      personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))
+                    ),
+                    React.createElement("input", { key: "name", name: "place_name", required: true, placeholder: "Place name" }),
+                    React.createElement("input", { key: "country", name: "country", placeholder: "Country" }),
+                    React.createElement("input", { key: "lat", name: "lat", type: "number", step: "any", placeholder: "Latitude" }),
+                    React.createElement("input", { key: "lng", name: "lng", type: "number", step: "any", placeholder: "Longitude" }),
+                    React.createElement("input", { key: "from", name: "from_date", type: "date" }),
+                    React.createElement("input", { key: "to", name: "to_date", type: "date" }),
+                    React.createElement("input", { key: "notes", name: "notes", placeholder: "Notes" }),
+                    React.createElement("button", { key: "b", type: "submit", disabled: !selectedPersonId }, "Add Place"),
+                    React.createElement("button", { key: "b2", className: "ghost", type: "button", disabled: !selectedPersonId, onClick: () => loadMigrationGeojson(selectedPersonId).catch((x) => setStatus(x.message)) }, "Load Migration GeoJSON"),
+                  ]),
+                  migrationGeoJson
+                    ? React.createElement(
+                        "a",
+                        {
+                          key: "geo",
+                          href: `data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(migrationGeoJson, null, 2))}`,
+                          download: `migration_${selectedPersonId || "person"}.geojson`,
+                        },
+                        "Download GeoJSON"
+                      )
+                    : null,
+                  React.createElement("div", { className: "list", key: "l" },
+                    personPlaces.map((pl) =>
+                      React.createElement("div", { className: "item", key: pl.id }, [
+                        React.createElement("div", { key: "t" }, `${pl.place_name}${pl.country ? `, ${pl.country}` : ""}`),
+                        React.createElement("div", { className: "muted", key: "d" }, `${pl.from_date || "?"} -> ${pl.to_date || "?"}`),
+                        React.createElement("button", { key: "v", type: "button", className: "btn", onClick: () => setSelectedPlace(pl) }, "View Map"),
+                      ])
+                    )
+                  ),
+                  selectedPlace
+                    ? React.createElement(
+                        "iframe",
+                        {
+                          key: "map",
+                          title: "Place map",
+                          width: "100%",
+                          height: "220",
+                          style: { border: "1px solid #d7cfc2", borderRadius: "8px", marginTop: "8px" },
+                          loading: "lazy",
+                          src: selectedPlace.lat != null && selectedPlace.lng != null
+                            ? `https://maps.google.com/maps?q=${selectedPlace.lat},${selectedPlace.lng}&z=6&output=embed`
+                            : `https://maps.google.com/maps?q=${encodeURIComponent(selectedPlace.place_name)}&z=6&output=embed`,
+                        }
+                      )
+                    : null,
                 ]),
                 React.createElement("details", { className: "card", key: "cr" }, [
                   React.createElement("summary", { key: "s" }, "Change Requests"),
