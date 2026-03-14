@@ -42,6 +42,9 @@ Collaborative genealogy platform focused on South Asian family history with grap
   - per-entity discussion threads (currently person-scoped in UI)
   - thread message APIs
   - realtime message updates over circle WebSocket channels
+- Revision history MVP:
+  - immutable person revision snapshots on create and approved change-request edits
+  - person revision history API and sidebar viewer
 - API tests with `pytest`.
 
 ## Project Layout

@@ -120,6 +120,17 @@ def test_change_request_approval_updates_person(tmp_path: Path) -> None:
     assert persons.status_code == 200
     assert persons.json()[0]["religion"] == "Spiritual"
 
+    revisions = client.get(
+        f"/circles/{circle_id}/persons/{person_id}/revisions",
+        headers={"X-User-Id": owner_id},
+    )
+    assert revisions.status_code == 200
+    rev_rows = revisions.json()
+    assert len(rev_rows) >= 2
+    assert rev_rows[0]["reason"].startswith("change_request_approved:")
+    latest_snapshot = rev_rows[0]["snapshot_json"]
+    assert '"religion": "Spiritual"' in latest_snapshot
+
 
 def test_add_member_is_idempotent_and_can_update_non_owner_role(tmp_path: Path) -> None:
     client = build_client(tmp_path)

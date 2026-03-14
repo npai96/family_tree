@@ -195,6 +195,21 @@ def init_db() -> None:
               FOREIGN KEY (thread_id) REFERENCES discussion_threads(id) ON DELETE CASCADE,
               FOREIGN KEY (sender_user_id) REFERENCES users(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS entity_revisions (
+              id TEXT PRIMARY KEY,
+              circle_id TEXT NOT NULL,
+              entity_type TEXT NOT NULL,
+              entity_id TEXT NOT NULL,
+              revision_no INTEGER NOT NULL,
+              snapshot_json TEXT NOT NULL,
+              reason TEXT,
+              changed_by TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              UNIQUE (entity_type, entity_id, revision_no),
+              FOREIGN KEY (circle_id) REFERENCES circles(id) ON DELETE CASCADE,
+              FOREIGN KEY (changed_by) REFERENCES users(id) ON DELETE CASCADE
+            );
             """
         )
 
@@ -400,6 +415,18 @@ class DiscussionMessageOut(BaseModel):
     created_at: str
 
 
+class EntityRevisionOut(BaseModel):
+    id: str
+    circle_id: str
+    entity_type: str
+    entity_id: str
+    revision_no: int
+    snapshot_json: str
+    reason: Optional[str] = None
+    changed_by: str
+    created_at: str
+
+
 class MediaAssetOut(BaseModel):
     id: str
     circle_id: str
@@ -503,6 +530,46 @@ def _safe_person_patch(patch: dict[str, Any]) -> tuple[str, list[Any]]:
     values = [patch[k] for k in keys]
     values.append(utc_now())
     return set_clause, values
+
+
+def _insert_person_revision(
+    conn: sqlite3.Connection,
+    circle_id: str,
+    person_id: str,
+    changed_by: str,
+    reason: Optional[str],
+) -> None:
+    person = conn.execute(
+        "SELECT * FROM persons WHERE id = ? AND circle_id = ?",
+        (person_id, circle_id),
+    ).fetchone()
+    if not person:
+        return
+    next_revision = conn.execute(
+        """
+        SELECT COALESCE(MAX(revision_no), 0) + 1 AS next_rev
+        FROM entity_revisions
+        WHERE entity_type = 'person' AND entity_id = ?
+        """,
+        (person_id,),
+    ).fetchone()["next_rev"]
+    conn.execute(
+        """
+        INSERT INTO entity_revisions (
+          id, circle_id, entity_type, entity_id, revision_no, snapshot_json, reason, changed_by, created_at
+        ) VALUES (?, ?, 'person', ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(uuid4()),
+            circle_id,
+            person_id,
+            int(next_revision),
+            json.dumps(dict(person)),
+            reason,
+            changed_by,
+            utc_now(),
+        ),
+    )
 
 
 def _load_edges(circle_id: str, direction: str) -> dict[str, list[Edge]]:
@@ -734,6 +801,7 @@ def create_person(circle_id: str, payload: PersonCreate, x_user_id: Optional[str
                 now,
             ),
         )
+        _insert_person_revision(conn, circle_id, person_id, actor_user_id, "person_created")
         row = conn.execute("SELECT * FROM persons WHERE id = ?", (person_id,)).fetchone()
     return PersonOut(**dict(row))
 
@@ -748,6 +816,33 @@ def list_persons(circle_id: str, x_user_id: Optional[str] = Header(default=None)
             (circle_id,),
         ).fetchall()
     return [PersonOut(**dict(row)) for row in rows]
+
+
+@app.get("/circles/{circle_id}/persons/{person_id}/revisions", response_model=list[EntityRevisionOut])
+def list_person_revisions(
+    circle_id: str,
+    person_id: str,
+    x_user_id: Optional[str] = Header(default=None),
+) -> list[EntityRevisionOut]:
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _get_role(conn, circle_id, actor_user_id)
+        person = conn.execute(
+            "SELECT id FROM persons WHERE id = ? AND circle_id = ?",
+            (person_id, circle_id),
+        ).fetchone()
+        if not person:
+            raise HTTPException(status_code=404, detail="Person not found in circle")
+        rows = conn.execute(
+            """
+            SELECT id, circle_id, entity_type, entity_id, revision_no, snapshot_json, reason, changed_by, created_at
+            FROM entity_revisions
+            WHERE circle_id = ? AND entity_type = 'person' AND entity_id = ?
+            ORDER BY revision_no DESC
+            """,
+            (circle_id, person_id),
+        ).fetchall()
+    return [EntityRevisionOut(**dict(row)) for row in rows]
 
 
 @app.post("/circles/{circle_id}/persons/{person_id}/places", response_model=PersonPlaceOut)
@@ -1474,6 +1569,13 @@ def approve_change_request(
         conn.execute(
             f"UPDATE persons SET {set_clause} WHERE id = ? AND circle_id = ?",
             (*values, row["entity_id"], circle_id),
+        )
+        _insert_person_revision(
+            conn,
+            circle_id,
+            row["entity_id"],
+            actor_user_id,
+            f"change_request_approved:{change_request_id}",
         )
         conn.execute(
             """

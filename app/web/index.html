@@ -347,6 +347,7 @@
         const [migrationGeoJson, setMigrationGeoJson] = useState(null);
         const [discussionThreadId, setDiscussionThreadId] = useState("");
         const [discussionMessages, setDiscussionMessages] = useState([]);
+        const [personRevisions, setPersonRevisions] = useState([]);
         const [subgraph, setSubgraph] = useState(null);
         const [lastRoot, setLastRoot] = useState("");
         const [status, setStatus] = useState("");
@@ -634,6 +635,12 @@
           setPersonMedia(data);
         }
 
+        async function loadPersonRevisions(personId) {
+          if (!personId || !selectedCircle) return setPersonRevisions([]);
+          const data = await requestJson(`/circles/${selectedCircle}/persons/${personId}/revisions`, { headers });
+          setPersonRevisions(data);
+        }
+
         async function ensurePersonThread(personId) {
           if (!personId || !selectedCircle) {
             setDiscussionThreadId("");
@@ -757,11 +764,13 @@
             setMigrationGeoJson(null);
             setDiscussionThreadId("");
             setDiscussionMessages([]);
+            setPersonRevisions([]);
             return;
           }
           loadPersonMedia(selectedPersonId).catch((e) => setStatus(e.message));
           loadPersonPlaces(selectedPersonId).catch((e) => setStatus(e.message));
           ensurePersonThread(selectedPersonId).catch((e) => setStatus(e.message));
+          loadPersonRevisions(selectedPersonId).catch((e) => setStatus(e.message));
         }, [selectedPersonId, selectedCircle, activeUserId]);
         useEffect(() => {
           if (!selectedPersonId && personOptions.length > 0) {
@@ -922,6 +931,25 @@
                         React.createElement("div", { className: "muted", key: "h" }, `Hobbies: ${selectedPerson.hobbies || "N/A"}`),
                       ])
                     : React.createElement("div", { className: "muted", key: "x" }, "Click a node to inspect profile details."),
+                ]),
+                React.createElement("details", { className: "card", key: "revisions" }, [
+                  React.createElement("summary", { key: "s" }, "Revision History"),
+                  React.createElement("div", { className: "list", key: "l" },
+                    personRevisions.map((rev) => {
+                      let religion = "N/A";
+                      try {
+                        const snap = JSON.parse(rev.snapshot_json);
+                        religion = snap.religion || "N/A";
+                      } catch (_) {
+                        religion = "N/A";
+                      }
+                      return React.createElement("div", { className: "item", key: rev.id }, [
+                        React.createElement("div", { key: "r" }, `Rev ${rev.revision_no} • ${rev.reason || "manual"}`),
+                        React.createElement("div", { className: "muted", key: "t" }, rev.created_at.slice(0, 19).replace("T", " ")),
+                        React.createElement("div", { className: "muted", key: "f" }, `Religion snapshot: ${religion}`),
+                      ]);
+                    })
+                  ),
                 ]),
                 React.createElement("details", { className: "card", key: "discussion" }, [
                   React.createElement("summary", { key: "s" }, "Discussion"),
