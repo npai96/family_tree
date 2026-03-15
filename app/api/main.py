@@ -427,6 +427,15 @@ class EntityRevisionOut(BaseModel):
     created_at: str
 
 
+class DuplicateHintOut(BaseModel):
+    person_id: str
+    full_name: str
+    birth_date: Optional[str] = None
+    birth_place: Optional[str] = None
+    score: int
+    reasons: list[str]
+
+
 class MediaAssetOut(BaseModel):
     id: str
     circle_id: str
@@ -481,6 +490,15 @@ class CircleWSManager:
 
 
 ws_manager = CircleWSManager()
+SUPPORTED_RELATIONSHIP_TYPES = {
+    "parent_of",
+    "child_of",
+    "spouse_of",
+    "sibling_of",
+    "aunt_uncle_of",
+    "niece_nephew_of",
+    "cousin_of",
+}
 
 
 def _require_user(conn: sqlite3.Connection, user_id: Optional[str]) -> str:
@@ -530,6 +548,86 @@ def _safe_person_patch(patch: dict[str, Any]) -> tuple[str, list[Any]]:
     values = [patch[k] for k in keys]
     values.append(utc_now())
     return set_clause, values
+
+
+def _normalize_relationship_type(raw: str) -> str:
+    value = raw.strip().lower().replace(" ", "_").replace("-", "_")
+    return value
+
+
+def _validate_person_dates(birth_date: Optional[str], death_date: Optional[str]) -> None:
+    if birth_date and death_date and death_date < birth_date:
+        raise HTTPException(status_code=400, detail="death_date must be on/after birth_date")
+
+
+def _find_person_duplicates(
+    conn: sqlite3.Connection,
+    circle_id: str,
+    full_name: str,
+    birth_date: Optional[str],
+    birth_place: Optional[str],
+    exclude_person_id: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT id, full_name, birth_date, birth_place FROM persons WHERE circle_id = ?",
+        (circle_id,),
+    ).fetchall()
+    candidate_name = full_name.strip().lower()
+    candidate_birth_place = (birth_place or "").strip().lower()
+    hints: list[dict[str, Any]] = []
+    for row in rows:
+        if exclude_person_id and row["id"] == exclude_person_id:
+            continue
+        score = 0
+        reasons: list[str] = []
+        row_name = (row["full_name"] or "").strip().lower()
+        if row_name == candidate_name and candidate_name:
+            score += 60
+            reasons.append("exact_name_match")
+        if birth_date and row["birth_date"] and row["birth_date"] == birth_date:
+            score += 25
+            reasons.append("birth_date_match")
+        row_birth_place = (row["birth_place"] or "").strip().lower()
+        if candidate_birth_place and row_birth_place and row_birth_place == candidate_birth_place:
+            score += 15
+            reasons.append("birth_place_match")
+        if score >= 60:
+            hints.append(
+                {
+                    "person_id": row["id"],
+                    "full_name": row["full_name"],
+                    "birth_date": row["birth_date"],
+                    "birth_place": row["birth_place"],
+                    "score": score,
+                    "reasons": reasons,
+                }
+            )
+    hints.sort(key=lambda h: h["score"], reverse=True)
+    return hints
+
+
+def _would_create_parent_cycle(conn: sqlite3.Connection, circle_id: str, parent_id: str, child_id: str) -> bool:
+    if parent_id == child_id:
+        return True
+    stack = [child_id]
+    visited: set[str] = set()
+    while stack:
+        cur = stack.pop()
+        if cur == parent_id:
+            return True
+        if cur in visited:
+            continue
+        visited.add(cur)
+        rows = conn.execute(
+            """
+            SELECT to_person_id
+            FROM relationships
+            WHERE circle_id = ? AND from_person_id = ? AND relationship_type = 'parent_of'
+            """,
+            (circle_id, cur),
+        ).fetchall()
+        stack.extend([row["to_person_id"] for row in rows])
+    return False
 
 
 def _insert_person_revision(
@@ -773,9 +871,20 @@ def add_member(circle_id: str, payload: CircleMembershipCreate, x_user_id: Optio
 def create_person(circle_id: str, payload: PersonCreate, x_user_id: Optional[str] = Header(default=None)) -> PersonOut:
     person_id = str(uuid4())
     now = utc_now()
+    normalized_name = payload.full_name.strip()
+    _validate_person_dates(payload.birth_date, payload.death_date)
     with get_conn() as conn:
         actor_user_id = _require_user(conn, x_user_id)
         _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        dup_hints = _find_person_duplicates(
+            conn,
+            circle_id,
+            full_name=normalized_name,
+            birth_date=payload.birth_date,
+            birth_place=payload.birth_place,
+        )
+        if any("exact_name_match" in hint["reasons"] and "birth_date_match" in hint["reasons"] for hint in dup_hints):
+            raise HTTPException(status_code=409, detail="Likely duplicate person exists (exact name + birth date)")
         conn.execute(
             """
             INSERT INTO persons (
@@ -786,7 +895,7 @@ def create_person(circle_id: str, payload: PersonCreate, x_user_id: Optional[str
             (
                 person_id,
                 circle_id,
-                payload.full_name.strip(),
+                normalized_name,
                 payload.religion,
                 payload.sex,
                 payload.birth_date,
@@ -816,6 +925,29 @@ def list_persons(circle_id: str, x_user_id: Optional[str] = Header(default=None)
             (circle_id,),
         ).fetchall()
     return [PersonOut(**dict(row)) for row in rows]
+
+
+@app.get("/circles/{circle_id}/persons/duplicate-hints", response_model=list[DuplicateHintOut])
+def person_duplicate_hints(
+    circle_id: str,
+    full_name: str = Query(..., min_length=1),
+    birth_date: Optional[str] = Query(default=None),
+    birth_place: Optional[str] = Query(default=None),
+    exclude_person_id: Optional[str] = Query(default=None),
+    x_user_id: Optional[str] = Header(default=None),
+) -> list[DuplicateHintOut]:
+    with get_conn() as conn:
+        actor_user_id = _require_user(conn, x_user_id)
+        _get_role(conn, circle_id, actor_user_id)
+        hints = _find_person_duplicates(
+            conn,
+            circle_id,
+            full_name=full_name,
+            birth_date=birth_date,
+            birth_place=birth_place,
+            exclude_person_id=exclude_person_id,
+        )
+    return [DuplicateHintOut(**hint) for hint in hints]
 
 
 @app.get("/circles/{circle_id}/persons/{person_id}/revisions", response_model=list[EntityRevisionOut])
@@ -1073,6 +1205,12 @@ def download_media(
 def create_relationship(circle_id: str, payload: RelationshipCreate, x_user_id: Optional[str] = Header(default=None)) -> RelationshipOut:
     rel_id = str(uuid4())
     now = utc_now()
+    normalized_type = _normalize_relationship_type(payload.relationship_type)
+    if normalized_type not in SUPPORTED_RELATIONSHIP_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported relationship_type. Allowed: {', '.join(sorted(SUPPORTED_RELATIONSHIP_TYPES))}",
+        )
     with get_conn() as conn:
         actor_user_id = _require_user(conn, x_user_id)
         _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
@@ -1082,6 +1220,13 @@ def create_relationship(circle_id: str, payload: RelationshipCreate, x_user_id: 
         ).fetchall()
         if len(person_rows) != 2:
             raise HTTPException(status_code=400, detail="Both persons must exist in circle")
+        if normalized_type == "parent_of" and _would_create_parent_cycle(
+            conn,
+            circle_id,
+            payload.from_person_id,
+            payload.to_person_id,
+        ):
+            raise HTTPException(status_code=400, detail="parent_of would create a cycle in ancestry graph")
         try:
             conn.execute(
                 """
@@ -1094,7 +1239,7 @@ def create_relationship(circle_id: str, payload: RelationshipCreate, x_user_id: 
                     circle_id,
                     payload.from_person_id,
                     payload.to_person_id,
-                    payload.relationship_type.strip(),
+                    normalized_type,
                     now,
                 ),
             )

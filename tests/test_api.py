@@ -357,6 +357,75 @@ def test_person_places_and_migration_geojson(tmp_path: Path) -> None:
     assert fc["features"][0]["geometry"]["type"] == "LineString"
 
 
+def test_duplicate_hints_and_duplicate_blocking(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    owner_id = create_user(client, "Owner")
+    circle = client.post("/circles", json={"name": "Dup Family"}, headers={"X-User-Id": owner_id})
+    circle_id = circle.json()["id"]
+
+    first = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Ravi Pai", "birth_date": "1970-01-01", "birth_place": "Mumbai"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert first.status_code == 200
+
+    hints = client.get(
+        f"/circles/{circle_id}/persons/duplicate-hints",
+        params={"full_name": "Ravi Pai", "birth_date": "1970-01-01", "birth_place": "Mumbai"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert hints.status_code == 200
+    rows = hints.json()
+    assert len(rows) == 1
+    assert rows[0]["score"] >= 60
+
+    second = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Ravi Pai", "birth_date": "1970-01-01", "birth_place": "Mumbai"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert second.status_code == 409
+
+
+def test_relationship_validation_and_parent_cycle_block(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    owner_id = create_user(client, "Owner")
+    circle = client.post("/circles", json={"name": "Rel Family"}, headers={"X-User-Id": owner_id})
+    circle_id = circle.json()["id"]
+
+    a = client.post(f"/circles/{circle_id}/persons", json={"full_name": "A"}, headers={"X-User-Id": owner_id}).json()["id"]
+    b = client.post(f"/circles/{circle_id}/persons", json={"full_name": "B"}, headers={"X-User-Id": owner_id}).json()["id"]
+    c = client.post(f"/circles/{circle_id}/persons", json={"full_name": "C"}, headers={"X-User-Id": owner_id}).json()["id"]
+
+    invalid = client.post(
+        f"/circles/{circle_id}/relationships",
+        json={"from_person_id": a, "to_person_id": b, "relationship_type": "mentor_of"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert invalid.status_code == 400
+
+    r1 = client.post(
+        f"/circles/{circle_id}/relationships",
+        json={"from_person_id": a, "to_person_id": b, "relationship_type": "parent_of"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert r1.status_code == 200
+    r2 = client.post(
+        f"/circles/{circle_id}/relationships",
+        json={"from_person_id": b, "to_person_id": c, "relationship_type": "parent_of"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert r2.status_code == 200
+
+    cycle = client.post(
+        f"/circles/{circle_id}/relationships",
+        json={"from_person_id": c, "to_person_id": a, "relationship_type": "parent_of"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert cycle.status_code == 400
+
+
 def test_discussion_threads_messages_and_ws(tmp_path: Path) -> None:
     client = build_client(tmp_path)
     owner_id = create_user(client, "Owner")

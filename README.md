@@ -45,6 +45,11 @@ Collaborative genealogy platform focused on South Asian family history with grap
 - Revision history MVP:
   - immutable person revision snapshots on create and approved change-request edits
   - person revision history API and sidebar viewer
+- Data quality guardrails:
+  - duplicate-hint endpoint for person creation (name/date/place scoring)
+  - hard block for exact name+birthdate duplicates
+  - relationship taxonomy validation (`parent_of`, `spouse_of`, etc.)
+  - parent-cycle prevention for ancestry edges
 - API tests with `pytest`.
 
 ## Project Layout

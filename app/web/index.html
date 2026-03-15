@@ -348,6 +348,7 @@
         const [discussionThreadId, setDiscussionThreadId] = useState("");
         const [discussionMessages, setDiscussionMessages] = useState([]);
         const [personRevisions, setPersonRevisions] = useState([]);
+        const [duplicateHints, setDuplicateHints] = useState([]);
         const [subgraph, setSubgraph] = useState(null);
         const [lastRoot, setLastRoot] = useState("");
         const [status, setStatus] = useState("");
@@ -522,14 +523,46 @@
 
         async function addPerson(e) {
           e.preventDefault();
+          const full_name = e.target.full_name.value.trim();
+          const birth_date = e.target.birth_date.value || null;
+          const birth_place = e.target.birth_place.value.trim() || null;
+          const hints = await requestJson(
+            `/circles/${selectedCircle}/persons/duplicate-hints?full_name=${encodeURIComponent(full_name)}${birth_date ? `&birth_date=${encodeURIComponent(birth_date)}` : ""}${birth_place ? `&birth_place=${encodeURIComponent(birth_place)}` : ""}`,
+            { headers }
+          );
+          setDuplicateHints(hints);
           await requestJson(`/circles/${selectedCircle}/persons`, {
             method: "POST",
             headers,
-            body: JSON.stringify({ full_name: e.target.full_name.value.trim(), religion: e.target.religion.value.trim() || null }),
+            body: JSON.stringify({
+              full_name,
+              religion: e.target.religion.value.trim() || null,
+              birth_date,
+              birth_place,
+            }),
           });
           setStatus("Person created");
           e.target.reset();
+          setDuplicateHints([]);
           await loadCircleData(selectedCircle);
+        }
+
+        async function checkPersonDuplicates(e) {
+          const form = e.currentTarget.form;
+          if (!form) return;
+          const full_name = form.full_name.value.trim();
+          const birth_date = form.birth_date.value || null;
+          const birth_place = form.birth_place.value.trim() || null;
+          if (!full_name) {
+            setStatus("Enter a full name before checking duplicates");
+            return;
+          }
+          const hints = await requestJson(
+            `/circles/${selectedCircle}/persons/duplicate-hints?full_name=${encodeURIComponent(full_name)}${birth_date ? `&birth_date=${encodeURIComponent(birth_date)}` : ""}${birth_place ? `&birth_place=${encodeURIComponent(birth_place)}` : ""}`,
+            { headers }
+          );
+          setDuplicateHints(hints);
+          setStatus(hints.length ? `Found ${hints.length} potential duplicate(s)` : "No likely duplicates found");
         }
 
         async function addRelationship(e) {
@@ -870,12 +903,27 @@
                   React.createElement("form", { key: "f1", onSubmit: (e) => addPerson(e).catch((x) => setStatus(x.message)) }, [
                     React.createElement("input", { key: "n", name: "full_name", required: true, placeholder: "Full name" }),
                     React.createElement("input", { key: "r", name: "religion", placeholder: "Religion" }),
+                    React.createElement("input", { key: "bd", name: "birth_date", type: "date" }),
+                    React.createElement("input", { key: "bp", name: "birth_place", placeholder: "Birth place" }),
+                    React.createElement("button", { key: "chk", type: "button", className: "ghost", onClick: (e) => checkPersonDuplicates(e).catch((x) => setStatus(x.message)), disabled: !selectedCircle }, "Check Duplicates"),
                     React.createElement("button", { key: "b", type: "submit", disabled: !selectedCircle }, "Add Person"),
                   ]),
+                  duplicateHints.length
+                    ? React.createElement(
+                        "div",
+                        { className: "list", key: "dups" },
+                        duplicateHints.map((h) =>
+                          React.createElement("div", { className: "item", key: h.person_id }, [
+                            React.createElement("div", { key: "n" }, `${h.full_name} (score ${h.score})`),
+                            React.createElement("div", { className: "muted", key: "m" }, `${h.birth_date || "?"} • ${h.birth_place || "?"} • ${h.reasons.join(", ")}`),
+                          ])
+                        )
+                      )
+                    : null,
                   React.createElement("form", { key: "f2", onSubmit: (e) => addRelationship(e).catch((x) => setStatus(x.message)) }, [
                     React.createElement("select", { key: "a", name: "from_person_id" }, personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))),
                     React.createElement("select", { key: "b", name: "to_person_id" }, personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))),
-                    React.createElement("input", { key: "c", name: "relationship_type", required: true, placeholder: "parent_of" }),
+                    React.createElement("input", { key: "c", name: "relationship_type", required: true, placeholder: "parent_of / spouse_of / sibling_of ..." }),
                     React.createElement("button", { key: "d", type: "submit", disabled: personOptions.length < 2 }, "Link"),
                   ]),
                   React.createElement("div", { className: "list", key: "l" },
