@@ -426,6 +426,54 @@ def test_relationship_validation_and_parent_cycle_block(tmp_path: Path) -> None:
     assert cycle.status_code == 400
 
 
+def test_relationship_delete_permissions(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    owner_id = create_user(client, "Owner")
+    editor_id = create_user(client, "Editor")
+    viewer_id = create_user(client, "Viewer")
+
+    circle = client.post("/circles", json={"name": "Delete Family"}, headers={"X-User-Id": owner_id})
+    circle_id = circle.json()["id"]
+    add_editor = client.post(
+        f"/circles/{circle_id}/members",
+        json={"user_id": editor_id, "role": "editor"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert add_editor.status_code == 200
+    add_viewer = client.post(
+        f"/circles/{circle_id}/members",
+        json={"user_id": viewer_id, "role": "viewer"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert add_viewer.status_code == 200
+
+    a = client.post(f"/circles/{circle_id}/persons", json={"full_name": "A"}, headers={"X-User-Id": owner_id}).json()["id"]
+    b = client.post(f"/circles/{circle_id}/persons", json={"full_name": "B"}, headers={"X-User-Id": owner_id}).json()["id"]
+    rel = client.post(
+        f"/circles/{circle_id}/relationships",
+        json={"from_person_id": a, "to_person_id": b, "relationship_type": "parent_of"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert rel.status_code == 200
+    rel_id = rel.json()["id"]
+
+    forbidden = client.delete(
+        f"/circles/{circle_id}/relationships/{rel_id}",
+        headers={"X-User-Id": viewer_id},
+    )
+    assert forbidden.status_code == 403
+
+    deleted = client.delete(
+        f"/circles/{circle_id}/relationships/{rel_id}",
+        headers={"X-User-Id": editor_id},
+    )
+    assert deleted.status_code == 200
+
+    rels = client.get(f"/circles/{circle_id}/relationships", headers={"X-User-Id": owner_id})
+    assert rels.status_code == 200
+    assert rels.json() == []
+
+
 def test_auth_login_and_bearer_access(tmp_path: Path) -> None:
     client = build_client(tmp_path)
     owner_id = create_user(client, "Owner")

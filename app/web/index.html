@@ -678,6 +678,24 @@
           await loadCircleData(selectedCircle);
         }
 
+        async function deleteRelationship(relationshipId) {
+          await requestJson(`/circles/${selectedCircle}/relationships/${relationshipId}`, {
+            method: "DELETE",
+            headers,
+          });
+          setStatus("Relationship deleted");
+          await loadCircleData(selectedCircle);
+          if (subgraph) {
+            setSubgraph((prev) => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                relationships: (prev.relationships || []).filter((r) => r.id !== relationshipId),
+              };
+            });
+          }
+        }
+
         async function loadSubgraph(e) {
           e.preventDefault();
           const root = e.target.root_person_id.value;
@@ -1037,6 +1055,33 @@
                   ]),
                   React.createElement("div", { className: "list", key: "l" },
                     persons.map((p) => React.createElement("div", { className: "item", key: p.id }, `${p.full_name} (${p.religion || "N/A"})`))
+                  ),
+                  React.createElement("div", { className: "muted", style: { margin: "6px 2px" }, key: "rh" }, "Relationships"),
+                  React.createElement("div", { className: "list", key: "rl" },
+                    relationships.map((r) => {
+                      const fromName = persons.find((p) => p.id === r.from_person_id)?.full_name || r.from_person_id.slice(0, 8);
+                      const toName = persons.find((p) => p.id === r.to_person_id)?.full_name || r.to_person_id.slice(0, 8);
+                      return React.createElement("div", { className: "item", key: r.id }, [
+                        React.createElement("div", { key: "txt", style: { display: "grid", gap: "2px" } }, [
+                          React.createElement("span", { key: "a" }, `${fromName} -> ${toName}`),
+                          React.createElement("span", { key: "b", className: "muted" }, r.relationship_type),
+                        ]),
+                        React.createElement(
+                          "button",
+                          {
+                            key: "del",
+                            type: "button",
+                            className: "ghost",
+                            onClick: () => {
+                              if (window.confirm("Delete this relationship?")) {
+                                deleteRelationship(r.id).catch((x) => setStatus(x.message));
+                              }
+                            },
+                          },
+                          "Delete"
+                        ),
+                      ]);
+                    })
                   ),
                 ]),
               ]) : null

@@ -1442,6 +1442,29 @@ def list_relationships(
     return [RelationshipOut(**dict(row)) for row in rows]
 
 
+@app.delete("/circles/{circle_id}/relationships/{relationship_id}")
+def delete_relationship(
+    circle_id: str,
+    relationship_id: str,
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, str]:
+    with get_conn() as conn:
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
+        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        row = conn.execute(
+            "SELECT id FROM relationships WHERE id = ? AND circle_id = ?",
+            (relationship_id, circle_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Relationship not found")
+        conn.execute(
+            "DELETE FROM relationships WHERE id = ? AND circle_id = ?",
+            (relationship_id, circle_id),
+        )
+    return {"status": "deleted", "relationship_id": relationship_id}
+
+
 @app.post("/circles/{circle_id}/context-events", response_model=ContextEventOut)
 def create_context_event(
     circle_id: str,
