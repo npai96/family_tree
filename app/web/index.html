@@ -757,6 +757,42 @@
           await loadCircleData(selectedCircle);
         }
 
+        async function updatePersonProfile(e) {
+          e.preventDefault();
+          if (!selectedPersonId) return;
+          const payload = {
+            full_name: e.target.full_name.value.trim(),
+            religion: e.target.religion.value.trim() || null,
+            sex: e.target.sex.value.trim() || null,
+            birth_date: e.target.birth_date.value || null,
+            death_date: e.target.death_date.value || null,
+            birth_place: e.target.birth_place.value.trim() || null,
+            occupation: e.target.occupation.value.trim() || null,
+            hobbies: e.target.hobbies.value.trim() || null,
+            personality: e.target.personality.value.trim() || null,
+            medical_notes: e.target.medical_notes.value.trim() || null,
+            bio_text: e.target.bio_text.value.trim() || null,
+            revision_reason: e.target.revision_reason.value.trim() || null,
+          };
+          await requestJson(`/circles/${selectedCircle}/persons/${selectedPersonId}`, {
+            method: "PATCH",
+            headers,
+            body: JSON.stringify(payload),
+          });
+          setStatus("Person profile updated");
+          await loadCircleData(selectedCircle);
+          await loadPersonRevisions(selectedPersonId);
+          if (subgraph) {
+            setSubgraph((prev) => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                persons: (prev.persons || []).map((p) => (p.id === selectedPersonId ? { ...p, ...payload } : p)),
+              };
+            });
+          }
+        }
+
         async function linkEventToPerson(e) {
           e.preventDefault();
           await requestJson(`/circles/${selectedCircle}/persons/${e.target.person_id.value}/context-links`, {
@@ -1127,10 +1163,22 @@
                   selectedPerson
                     ? React.createElement("div", { key: "p" }, [
                         React.createElement("div", { style: { fontWeight: 700, marginBottom: "6px" }, key: "n" }, selectedPerson.full_name),
-                        React.createElement("div", { className: "muted", key: "r" }, `Religion: ${selectedPerson.religion || "N/A"}`),
-                        React.createElement("div", { className: "muted", key: "b" }, `Birth: ${selectedPerson.birth_date || "Unknown"} ${selectedPerson.birth_place ? "• " + selectedPerson.birth_place : ""}`),
-                        React.createElement("div", { className: "muted", key: "o" }, `Occupation: ${selectedPerson.occupation || "N/A"}`),
-                        React.createElement("div", { className: "muted", key: "h" }, `Hobbies: ${selectedPerson.hobbies || "N/A"}`),
+                        React.createElement("div", { className: "muted", key: "r" }, `Birth: ${selectedPerson.birth_date || "Unknown"} ${selectedPerson.birth_place ? "• " + selectedPerson.birth_place : ""}`),
+                        React.createElement("form", { key: `edit-${selectedPerson.id}`, onSubmit: (e) => updatePersonProfile(e).catch((x) => setStatus(x.message)) }, [
+                          React.createElement("input", { key: "f1", name: "full_name", required: true, defaultValue: selectedPerson.full_name || "" }),
+                          React.createElement("input", { key: "f2", name: "religion", placeholder: "Religion", defaultValue: selectedPerson.religion || "" }),
+                          React.createElement("input", { key: "f3", name: "sex", placeholder: "Sex", defaultValue: selectedPerson.sex || "" }),
+                          React.createElement("input", { key: "f4", type: "date", name: "birth_date", defaultValue: selectedPerson.birth_date || "" }),
+                          React.createElement("input", { key: "f5", type: "date", name: "death_date", defaultValue: selectedPerson.death_date || "" }),
+                          React.createElement("input", { key: "f6", name: "birth_place", placeholder: "Birth place", defaultValue: selectedPerson.birth_place || "" }),
+                          React.createElement("input", { key: "f7", name: "occupation", placeholder: "Occupation", defaultValue: selectedPerson.occupation || "" }),
+                          React.createElement("input", { key: "f8", name: "hobbies", placeholder: "Hobbies", defaultValue: selectedPerson.hobbies || "" }),
+                          React.createElement("input", { key: "f9", name: "personality", placeholder: "Personality", defaultValue: selectedPerson.personality || "" }),
+                          React.createElement("textarea", { key: "f10", name: "medical_notes", placeholder: "Medical notes", defaultValue: selectedPerson.medical_notes || "" }),
+                          React.createElement("textarea", { key: "f11", name: "bio_text", placeholder: "Biography / oral history notes", defaultValue: selectedPerson.bio_text || "" }),
+                          React.createElement("input", { key: "f12", name: "revision_reason", placeholder: "Revision reason (optional)" }),
+                          React.createElement("button", { key: "f13", type: "submit" }, "Save Profile"),
+                        ]),
                       ])
                     : React.createElement("div", { className: "muted", key: "x" }, "Click a node to inspect profile details."),
                 ]),
@@ -1139,16 +1187,24 @@
                   React.createElement("div", { className: "list", key: "l" },
                     personRevisions.map((rev) => {
                       let religion = "N/A";
+                      let occupation = "N/A";
+                      let birthPlace = "N/A";
                       try {
                         const snap = JSON.parse(rev.snapshot_json);
                         religion = snap.religion || "N/A";
+                        occupation = snap.occupation || "N/A";
+                        birthPlace = snap.birth_place || "N/A";
                       } catch (_) {
                         religion = "N/A";
+                        occupation = "N/A";
+                        birthPlace = "N/A";
                       }
                       return React.createElement("div", { className: "item", key: rev.id }, [
                         React.createElement("div", { key: "r" }, `Rev ${rev.revision_no} • ${rev.reason || "manual"}`),
                         React.createElement("div", { className: "muted", key: "t" }, rev.created_at.slice(0, 19).replace("T", " ")),
-                        React.createElement("div", { className: "muted", key: "f" }, `Religion snapshot: ${religion}`),
+                        React.createElement("div", { className: "muted", key: "f1" }, `Religion: ${religion}`),
+                        React.createElement("div", { className: "muted", key: "f2" }, `Occupation: ${occupation}`),
+                        React.createElement("div", { className: "muted", key: "f3" }, `Birth place: ${birthPlace}`),
                       ]);
                     })
                   ),

@@ -305,6 +305,21 @@ class PersonOut(PersonCreate):
     updated_at: str
 
 
+class PersonUpdate(BaseModel):
+    full_name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    religion: Optional[str] = None
+    sex: Optional[str] = None
+    birth_date: Optional[str] = None
+    death_date: Optional[str] = None
+    birth_place: Optional[str] = None
+    occupation: Optional[str] = None
+    hobbies: Optional[str] = None
+    personality: Optional[str] = None
+    medical_notes: Optional[str] = None
+    bio_text: Optional[str] = None
+    revision_reason: Optional[str] = None
+
+
 class RelationshipCreate(BaseModel):
     from_person_id: str
     to_person_id: str
@@ -1089,6 +1104,71 @@ def list_persons(
             (circle_id,),
         ).fetchall()
     return [PersonOut(**dict(row)) for row in rows]
+
+
+@app.patch("/circles/{circle_id}/persons/{person_id}", response_model=PersonOut)
+def update_person(
+    circle_id: str,
+    person_id: str,
+    payload: PersonUpdate,
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> PersonOut:
+    patch = payload.model_dump(exclude_unset=True)
+    revision_reason = patch.pop("revision_reason", None)
+    if not patch:
+        raise HTTPException(status_code=400, detail="No fields provided for update")
+
+    if "full_name" in patch:
+        full_name = (patch.get("full_name") or "").strip()
+        if not full_name:
+            raise HTTPException(status_code=400, detail="full_name cannot be empty")
+        patch["full_name"] = full_name
+
+    optional_string_fields = {
+        "religion",
+        "sex",
+        "birth_date",
+        "death_date",
+        "birth_place",
+        "occupation",
+        "hobbies",
+        "personality",
+        "medical_notes",
+        "bio_text",
+    }
+    for field in optional_string_fields:
+        if field in patch and isinstance(patch[field], str):
+            patch[field] = patch[field].strip() or None
+
+    with get_conn() as conn:
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
+        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        existing = conn.execute(
+            "SELECT * FROM persons WHERE id = ? AND circle_id = ?",
+            (person_id, circle_id),
+        ).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="Person not found in circle")
+
+        birth_date = patch.get("birth_date", existing["birth_date"])
+        death_date = patch.get("death_date", existing["death_date"])
+        _validate_person_dates(birth_date, death_date)
+
+        set_clause, values = _safe_person_patch(patch)
+        conn.execute(
+            f"UPDATE persons SET {set_clause} WHERE id = ? AND circle_id = ?",
+            (*values, person_id, circle_id),
+        )
+        _insert_person_revision(
+            conn,
+            circle_id,
+            person_id,
+            actor_user_id,
+            revision_reason or "person_updated",
+        )
+        row = conn.execute("SELECT * FROM persons WHERE id = ? AND circle_id = ?", (person_id, circle_id)).fetchone()
+    return PersonOut(**dict(row))
 
 
 @app.get("/circles/{circle_id}/persons/duplicate-hints", response_model=list[DuplicateHintOut])

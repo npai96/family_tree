@@ -474,6 +474,69 @@ def test_relationship_delete_permissions(tmp_path: Path) -> None:
     assert rels.json() == []
 
 
+def test_person_patch_updates_profile_and_revisions(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    owner_id = create_user(client, "Owner")
+    editor_id = create_user(client, "Editor")
+    viewer_id = create_user(client, "Viewer")
+
+    circle = client.post("/circles", json={"name": "Profile Family"}, headers={"X-User-Id": owner_id})
+    circle_id = circle.json()["id"]
+    add_editor = client.post(
+        f"/circles/{circle_id}/members",
+        json={"user_id": editor_id, "role": "editor"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert add_editor.status_code == 200
+    add_viewer = client.post(
+        f"/circles/{circle_id}/members",
+        json={"user_id": viewer_id, "role": "viewer"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert add_viewer.status_code == 200
+
+    person = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Meera", "birth_date": "1980-01-01"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert person.status_code == 200
+    person_id = person.json()["id"]
+
+    forbidden = client.patch(
+        f"/circles/{circle_id}/persons/{person_id}",
+        json={"occupation": "Engineer"},
+        headers={"X-User-Id": viewer_id},
+    )
+    assert forbidden.status_code == 403
+
+    updated = client.patch(
+        f"/circles/{circle_id}/persons/{person_id}",
+        json={
+            "occupation": "Engineer",
+            "hobbies": "Classical music",
+            "birth_place": "Pune",
+            "revision_reason": "profile_edit",
+        },
+        headers={"X-User-Id": editor_id},
+    )
+    assert updated.status_code == 200
+    body = updated.json()
+    assert body["occupation"] == "Engineer"
+    assert body["hobbies"] == "Classical music"
+    assert body["birth_place"] == "Pune"
+
+    revisions = client.get(
+        f"/circles/{circle_id}/persons/{person_id}/revisions",
+        headers={"X-User-Id": owner_id},
+    )
+    assert revisions.status_code == 200
+    rev_rows = revisions.json()
+    assert len(rev_rows) >= 2
+    assert rev_rows[0]["reason"] == "profile_edit"
+    assert '"occupation": "Engineer"' in rev_rows[0]["snapshot_json"]
+
+
 def test_auth_login_and_bearer_access(tmp_path: Path) -> None:
     client = build_client(tmp_path)
     owner_id = create_user(client, "Owner")
