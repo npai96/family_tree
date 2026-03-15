@@ -50,6 +50,10 @@ Collaborative genealogy platform focused on South Asian family history with grap
   - hard block for exact name+birthdate duplicates
   - relationship taxonomy validation (`parent_of`, `spouse_of`, etc.)
   - parent-cycle prevention for ancestry edges
+- Auth MVP:
+  - `/auth/login` issues bearer session tokens
+  - `/auth/me` resolves current user
+  - API endpoints accept `Authorization: Bearer ...` (legacy `X-User-Id` kept as fallback)
 - API tests with `pytest`.
 
 ## Project Layout

@@ -186,6 +186,15 @@
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script>
       const { useEffect, useMemo, useRef, useState } = React;
+      const RELATIONSHIP_TYPES = [
+        "parent_of",
+        "child_of",
+        "spouse_of",
+        "sibling_of",
+        "aunt_uncle_of",
+        "niece_nephew_of",
+        "cousin_of",
+      ];
 
       function edgeKey(fromId, toId) {
         return `${fromId}->${toId}`;
@@ -256,6 +265,49 @@
         const { width, height, pos, nodes, edges } = computeLayout(subgraph, rootPersonId);
         const names = {};
         nodes.forEach((n) => { names[n.id] = n.full_name; });
+        const undirectedTypes = new Set(["spouse_of", "sibling_of", "cousin_of", "partner_of"]);
+        const displayEdgeMap = new Map();
+        edges.forEach((edge) => {
+          let fromId = edge.from_person_id;
+          let toId = edge.to_person_id;
+          let relType = edge.relationship_type;
+
+          if (relType === "child_of") {
+            fromId = edge.to_person_id;
+            toId = edge.from_person_id;
+            relType = "parent_of";
+          } else if (relType === "niece_nephew_of") {
+            fromId = edge.to_person_id;
+            toId = edge.from_person_id;
+            relType = "aunt_uncle_of";
+          } else if (relType === "grandchild_of") {
+            fromId = edge.to_person_id;
+            toId = edge.from_person_id;
+            relType = "grandparent_of";
+          }
+
+          if (undirectedTypes.has(relType) && fromId > toId) {
+            fromId = edge.to_person_id;
+            toId = edge.from_person_id;
+          }
+
+          const dedupeKey = `${fromId}|${toId}|${relType}`;
+          if (!displayEdgeMap.has(dedupeKey)) {
+            displayEdgeMap.set(dedupeKey, {
+              id: dedupeKey,
+              from_person_id: fromId,
+              to_person_id: toId,
+              relationship_type: relType,
+            });
+          }
+        });
+        const displayEdges = Array.from(displayEdgeMap.values());
+        const pairCounts = new Map();
+        displayEdges.forEach((edge) => {
+          const pairKey = `${edge.from_person_id}|${edge.to_person_id}`;
+          pairCounts.set(pairKey, (pairCounts.get(pairKey) || 0) + 1);
+        });
+        const pairSeen = new Map();
 
         return React.createElement("svg", { width: Math.ceil(width * zoom), height: Math.ceil(height * zoom) }, [
           React.createElement("g", { key: "scale", transform: `scale(${zoom})` }, [
@@ -272,15 +324,32 @@
                 React.createElement("polygon", { key: "poly", points: "0 0, 10 3.5, 0 7", fill: "#97a8b6" })
               ])
             ]),
-            ...edges.map((e) => {
+            ...displayEdges.map((e) => {
               const from = pos[e.from_person_id];
               const to = pos[e.to_person_id];
               if (!from || !to) return null;
-              const isHighlighted = highlightedEdgeKeys.has(edgeKey(e.from_person_id, e.to_person_id));
+              const pairKey = `${e.from_person_id}|${e.to_person_id}`;
+              const seen = pairSeen.get(pairKey) || 0;
+              pairSeen.set(pairKey, seen + 1);
+              const count = pairCounts.get(pairKey) || 1;
+              const laneOffset = (seen - (count - 1) / 2) * 14;
+              const startX = from.x + 80;
+              const startY = from.y + 24 + laneOffset;
+              const endX = to.x - 80;
+              const endY = to.y + 24 + laneOffset;
+              const controlDelta = Math.max(44, Math.abs(endX - startX) * 0.35);
+              const control1X = startX + controlDelta;
+              const control2X = endX - controlDelta;
+              const labelX = (startX + endX) / 2;
+              const labelY = (startY + endY) / 2 - 9;
+              const isHighlighted = (
+                highlightedEdgeKeys.has(edgeKey(e.from_person_id, e.to_person_id)) ||
+                highlightedEdgeKeys.has(edgeKey(e.to_person_id, e.from_person_id))
+              );
               return React.createElement("g", { key: e.id }, [
                 React.createElement("path", {
                   key: "line",
-                  d: `M ${from.x + 80} ${from.y + 24} C ${from.x + 130} ${from.y + 24}, ${to.x - 130} ${to.y + 24}, ${to.x - 80} ${to.y + 24}`,
+                  d: `M ${startX} ${startY} C ${control1X} ${startY}, ${control2X} ${endY}, ${endX} ${endY}`,
                   fill: "none",
                   stroke: isHighlighted ? "#d18b3d" : "#97a8b6",
                   strokeWidth: isHighlighted ? 3.5 : 2,
@@ -288,8 +357,8 @@
                 }),
                 React.createElement("text", {
                   key: "label",
-                  x: (from.x + to.x) / 2,
-                  y: (from.y + to.y) / 2 - 8,
+                  x: labelX,
+                  y: labelY,
                   textAnchor: "middle",
                   fontSize: 11,
                   fill: isHighlighted ? "#a96a26" : "#657786"
@@ -333,6 +402,7 @@
       function App() {
         const [users, setUsers] = useState([]);
         const [activeUserId, setActiveUserId] = useState(localStorage.getItem("activeUserId") || "");
+        const [authToken, setAuthToken] = useState(localStorage.getItem("authToken") || "");
         const [circles, setCircles] = useState([]);
         const [selectedCircle, setSelectedCircle] = useState("");
         const [members, setMembers] = useState([]);
@@ -362,9 +432,10 @@
         const graphViewportRef = useRef(null);
 
         const headers = useMemo(() => {
-          if (!activeUserId) return { "Content-Type": "application/json" };
-          return { "Content-Type": "application/json", "X-User-Id": activeUserId };
-        }, [activeUserId]);
+          if (authToken) return { "Content-Type": "application/json", Authorization: `Bearer ${authToken}` };
+          if (activeUserId) return { "Content-Type": "application/json", "X-User-Id": activeUserId };
+          return { "Content-Type": "application/json" };
+        }, [activeUserId, authToken]);
 
         const personOptions = useMemo(() => persons.map((p) => ({ value: p.id, label: p.full_name })), [persons]);
         const activeUserName = useMemo(() => users.find((u) => u.id === activeUserId)?.display_name || "", [users, activeUserId]);
@@ -378,6 +449,12 @@
         function setActiveUser(id) {
           setActiveUserId(id);
           localStorage.setItem("activeUserId", id || "");
+        }
+
+        function setToken(token) {
+          setAuthToken(token || "");
+          if (token) localStorage.setItem("authToken", token);
+          else localStorage.removeItem("authToken");
         }
 
         async function requestJson(url, options = {}) {
@@ -443,6 +520,20 @@
           if (!activeUserId && data.length) setActiveUser(data[0].id);
         }
 
+        async function loginAsActiveUser() {
+          if (!activeUserId) {
+            setStatus("Select a user first");
+            return;
+          }
+          const data = await requestJson("/auth/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ user_id: activeUserId }),
+          });
+          setToken(data.access_token);
+          setStatus("Signed in");
+        }
+
         async function loadCircles() {
           if (!activeUserId) return setCircles([]);
           const data = await requestJson("/circles", { headers });
@@ -499,6 +590,12 @@
           e.target.reset();
           await loadUsers();
           setActiveUser(user.id);
+          const auth = await requestJson("/auth/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ user_id: user.id }),
+          });
+          setToken(auth.access_token);
         }
 
         async function createCircle(e) {
@@ -715,7 +812,9 @@
           form.append("file", chosen);
           const res = await fetch(`/circles/${selectedCircle}/persons/${targetPersonId}/media`, {
             method: "POST",
-            headers: activeUserId ? { "X-User-Id": activeUserId } : {},
+            headers: authToken
+              ? { Authorization: `Bearer ${authToken}` }
+              : (activeUserId ? { "X-User-Id": activeUserId } : {}),
             body: form,
           });
           if (!res.ok) {
@@ -811,9 +910,12 @@
           }
         }, [personOptions, selectedPersonId]);
         useEffect(() => {
-          if (!selectedCircle || !activeUserId) return undefined;
+          if (!selectedCircle || (!activeUserId && !authToken)) return undefined;
           const proto = window.location.protocol === "https:" ? "wss" : "ws";
-          const ws = new WebSocket(`${proto}://${window.location.host}/ws/circles/${selectedCircle}?user_id=${activeUserId}`);
+          const authQuery = authToken
+            ? `token=${encodeURIComponent(authToken)}`
+            : `user_id=${encodeURIComponent(activeUserId)}`;
+          const ws = new WebSocket(`${proto}://${window.location.host}/ws/circles/${selectedCircle}?${authQuery}`);
           ws.onmessage = (evt) => {
             try {
               const data = JSON.parse(evt.data);
@@ -828,7 +930,7 @@
             setStatus("Realtime channel disconnected");
           };
           return () => ws.close();
-        }, [selectedCircle, activeUserId, discussionThreadId]);
+        }, [selectedCircle, activeUserId, authToken, discussionThreadId]);
 
         const gridCols = `${leftOpen ? "320px" : "44px"} 1fr ${rightOpen ? "340px" : "44px"}`;
 
@@ -865,6 +967,8 @@
                     [React.createElement("option", { key: "x", value: "" }, "Select user")]
                       .concat(users.map((u) => React.createElement("option", { key: u.id, value: u.id }, u.display_name)))
                   ),
+                  React.createElement("button", { key: "signin", type: "button", className: "ghost", onClick: () => loginAsActiveUser().catch((x) => setStatus(x.message)), disabled: !activeUserId }, "Sign In"),
+                  React.createElement("button", { key: "signout", type: "button", className: "ghost", onClick: () => { setToken(""); setStatus("Signed out"); } }, "Sign Out"),
                   React.createElement("form", { key: "f2", onSubmit: (e) => createCircle(e).catch((x) => setStatus(x.message)) }, [
                     React.createElement("input", { key: "i2", name: "name", required: true, placeholder: "New circle name" }),
                     React.createElement("button", { key: "b2", type: "submit" }, "Create Circle"),
@@ -875,6 +979,7 @@
                       .concat(circles.map((c) => React.createElement("option", { key: c.id, value: c.id }, c.name)))
                   ),
                   React.createElement("div", { className: "muted", key: "ctx" }, activeUserName ? `Active: ${activeUserName}` : "No active user"),
+                  React.createElement("div", { className: "muted", key: "ctx2" }, authToken ? "Auth: signed in" : "Auth: not signed in (legacy header fallback active)"),
                 ]),
                 React.createElement("details", { className: "card", key: "m" }, [
                   React.createElement("summary", { key: "s" }, "Membership"),
@@ -923,7 +1028,11 @@
                   React.createElement("form", { key: "f2", onSubmit: (e) => addRelationship(e).catch((x) => setStatus(x.message)) }, [
                     React.createElement("select", { key: "a", name: "from_person_id" }, personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))),
                     React.createElement("select", { key: "b", name: "to_person_id" }, personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))),
-                    React.createElement("input", { key: "c", name: "relationship_type", required: true, placeholder: "parent_of / spouse_of / sibling_of ..." }),
+                    React.createElement(
+                      "select",
+                      { key: "c", name: "relationship_type", required: true, defaultValue: "parent_of" },
+                      RELATIONSHIP_TYPES.map((t) => React.createElement("option", { key: t, value: t }, t))
+                    ),
                     React.createElement("button", { key: "d", type: "submit", disabled: personOptions.length < 2 }, "Link"),
                   ]),
                   React.createElement("div", { className: "list", key: "l" },

@@ -426,6 +426,34 @@ def test_relationship_validation_and_parent_cycle_block(tmp_path: Path) -> None:
     assert cycle.status_code == 400
 
 
+def test_auth_login_and_bearer_access(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    owner_id = create_user(client, "Owner")
+
+    login = client.post("/auth/login", json={"user_id": owner_id})
+    assert login.status_code == 200
+    token = login.json()["access_token"]
+
+    me = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me.status_code == 200
+    assert me.json()["id"] == owner_id
+
+    circle = client.post(
+        "/circles",
+        json={"name": "Bearer Family"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert circle.status_code == 200
+    circle_id = circle.json()["id"]
+
+    person = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Bearer User"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert person.status_code == 200
+
+
 def test_discussion_threads_messages_and_ws(tmp_path: Path) -> None:
     client = build_client(tmp_path)
     owner_id = create_user(client, "Owner")

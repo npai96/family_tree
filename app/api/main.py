@@ -3,10 +3,11 @@ from __future__ import annotations
 import sqlite3
 import json
 import shutil
+import secrets
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Literal, Optional
 from uuid import uuid4
@@ -210,6 +211,15 @@ def init_db() -> None:
               FOREIGN KEY (circle_id) REFERENCES circles(id) ON DELETE CASCADE,
               FOREIGN KEY (changed_by) REFERENCES users(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS auth_sessions (
+              token TEXT PRIMARY KEY,
+              user_id TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              expires_at TEXT NOT NULL,
+              revoked_at TEXT,
+              FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
             """
         )
 
@@ -238,6 +248,18 @@ class UserOut(BaseModel):
     id: str
     display_name: str
     created_at: str
+
+
+class AuthLoginRequest(BaseModel):
+    user_id: Optional[str] = None
+    display_name: Optional[str] = None
+
+
+class AuthLoginOut(BaseModel):
+    access_token: str
+    token_type: Literal["bearer"] = "bearer"
+    user: UserOut
+    expires_at: str
 
 
 class CircleCreate(BaseModel):
@@ -510,6 +532,49 @@ def _require_user(conn: sqlite3.Connection, user_id: Optional[str]) -> str:
     return user_id
 
 
+def _extract_bearer_token(authorization: Optional[str]) -> Optional[str]:
+    if not authorization:
+        return None
+    parts = authorization.strip().split(" ", 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+    return parts[1].strip()
+
+
+def _user_id_from_session_token(conn: sqlite3.Connection, token: Optional[str]) -> Optional[str]:
+    if not token:
+        return None
+    row = conn.execute(
+        """
+        SELECT user_id, expires_at, revoked_at
+        FROM auth_sessions
+        WHERE token = ?
+        """,
+        (token,),
+    ).fetchone()
+    if not row:
+        return None
+    if row["revoked_at"] is not None:
+        return None
+    if row["expires_at"] < utc_now():
+        return None
+    return str(row["user_id"])
+
+
+def _require_authenticated_user(
+    conn: sqlite3.Connection,
+    x_user_id: Optional[str],
+    authorization: Optional[str],
+) -> str:
+    if x_user_id:
+        return _require_user(conn, x_user_id)
+    token = _extract_bearer_token(authorization)
+    user_id = _user_id_from_session_token(conn, token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Missing or invalid auth token")
+    return _require_user(conn, user_id)
+
+
 def _get_role(conn: sqlite3.Connection, circle_id: str, user_id: str) -> str:
     row = conn.execute(
         "SELECT role FROM circle_memberships WHERE circle_id = ? AND user_id = ?",
@@ -737,15 +802,25 @@ def favicon() -> Response:
 
 
 @app.websocket("/ws/circles/{circle_id}")
-async def circle_ws(circle_id: str, websocket: WebSocket, user_id: str) -> None:
+async def circle_ws(
+    circle_id: str,
+    websocket: WebSocket,
+    user_id: Optional[str] = None,
+    token: Optional[str] = None,
+) -> None:
     with get_conn() as conn:
-        _require_user(conn, user_id)
-        _get_role(conn, circle_id, user_id)
+        token_user_id = _user_id_from_session_token(conn, token)
+        resolved_user_id = user_id or token_user_id
+        if not resolved_user_id:
+            await websocket.close(code=1008)
+            return
+        _require_user(conn, resolved_user_id)
+        _get_role(conn, circle_id, resolved_user_id)
 
     await ws_manager.connect(circle_id, websocket)
     await ws_manager.broadcast(
         circle_id,
-        {"type": "presence.updated", "circle_id": circle_id, "user_id": user_id, "state": "joined"},
+        {"type": "presence.updated", "circle_id": circle_id, "user_id": resolved_user_id, "state": "joined"},
     )
     try:
         while True:
@@ -754,7 +829,7 @@ async def circle_ws(circle_id: str, websocket: WebSocket, user_id: str) -> None:
         ws_manager.disconnect(circle_id, websocket)
         await ws_manager.broadcast(
             circle_id,
-            {"type": "presence.updated", "circle_id": circle_id, "user_id": user_id, "state": "left"},
+            {"type": "presence.updated", "circle_id": circle_id, "user_id": resolved_user_id, "state": "left"},
         )
 
 
@@ -777,12 +852,80 @@ def list_users() -> list[UserOut]:
     return [UserOut(**dict(row)) for row in rows]
 
 
+@app.post("/auth/login", response_model=AuthLoginOut)
+def auth_login(payload: AuthLoginRequest) -> AuthLoginOut:
+    now = utc_now()
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=14)).isoformat()
+    token = secrets.token_urlsafe(32)
+    with get_conn() as conn:
+        user_row = None
+        if payload.user_id:
+            user_row = conn.execute(
+                "SELECT id, display_name, created_at FROM users WHERE id = ?",
+                (payload.user_id,),
+            ).fetchone()
+        elif payload.display_name and payload.display_name.strip():
+            user_row = conn.execute(
+                "SELECT id, display_name, created_at FROM users WHERE lower(display_name) = lower(?) ORDER BY created_at ASC LIMIT 1",
+                (payload.display_name.strip(),),
+            ).fetchone()
+            if not user_row:
+                new_id = str(uuid4())
+                conn.execute(
+                    "INSERT INTO users (id, display_name, created_at) VALUES (?, ?, ?)",
+                    (new_id, payload.display_name.strip(), now),
+                )
+                user_row = conn.execute(
+                    "SELECT id, display_name, created_at FROM users WHERE id = ?",
+                    (new_id,),
+                ).fetchone()
+        else:
+            raise HTTPException(status_code=400, detail="Provide either user_id or display_name")
+
+        if not user_row:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        conn.execute(
+            """
+            INSERT INTO auth_sessions (token, user_id, created_at, expires_at, revoked_at)
+            VALUES (?, ?, ?, ?, NULL)
+            """,
+            (token, user_row["id"], now, expires_at),
+        )
+
+    return AuthLoginOut(
+        access_token=token,
+        user=UserOut(**dict(user_row)),
+        expires_at=expires_at,
+    )
+
+
+@app.get("/auth/me", response_model=UserOut)
+def auth_me(
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> UserOut:
+    with get_conn() as conn:
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
+        row = conn.execute(
+            "SELECT id, display_name, created_at FROM users WHERE id = ?",
+            (actor_user_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+    return UserOut(**dict(row))
+
+
 @app.post("/circles", response_model=CircleOut)
-def create_circle(payload: CircleCreate, x_user_id: Optional[str] = Header(default=None)) -> CircleOut:
+def create_circle(
+    payload: CircleCreate,
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> CircleOut:
     circle_id = str(uuid4())
     now = utc_now()
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         conn.execute(
             "INSERT INTO circles (id, name, created_at) VALUES (?, ?, ?)",
             (circle_id, payload.name.strip(), now),
@@ -795,9 +938,12 @@ def create_circle(payload: CircleCreate, x_user_id: Optional[str] = Header(defau
 
 
 @app.get("/circles", response_model=list[CircleOut])
-def list_circles(x_user_id: Optional[str] = Header(default=None)) -> list[CircleOut]:
+def list_circles(
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> list[CircleOut]:
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         rows = conn.execute(
             """
             SELECT c.id, c.name, c.created_at
@@ -812,9 +958,13 @@ def list_circles(x_user_id: Optional[str] = Header(default=None)) -> list[Circle
 
 
 @app.get("/circles/{circle_id}/members", response_model=list[CircleMembershipOut])
-def list_members(circle_id: str, x_user_id: Optional[str] = Header(default=None)) -> list[CircleMembershipOut]:
+def list_members(
+    circle_id: str,
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> list[CircleMembershipOut]:
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _get_role(conn, circle_id, actor_user_id)
         rows = conn.execute(
             "SELECT circle_id, user_id, role, created_at FROM circle_memberships WHERE circle_id = ? ORDER BY created_at",
@@ -824,10 +974,15 @@ def list_members(circle_id: str, x_user_id: Optional[str] = Header(default=None)
 
 
 @app.post("/circles/{circle_id}/members", response_model=CircleMembershipOut)
-def add_member(circle_id: str, payload: CircleMembershipCreate, x_user_id: Optional[str] = Header(default=None)) -> CircleMembershipOut:
+def add_member(
+    circle_id: str,
+    payload: CircleMembershipCreate,
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> CircleMembershipOut:
     now = utc_now()
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _require_circle_role(conn, circle_id, actor_user_id, {"owner"})
         _require_user(conn, payload.user_id)
         existing = conn.execute(
@@ -868,13 +1023,18 @@ def add_member(circle_id: str, payload: CircleMembershipCreate, x_user_id: Optio
 
 
 @app.post("/circles/{circle_id}/persons", response_model=PersonOut)
-def create_person(circle_id: str, payload: PersonCreate, x_user_id: Optional[str] = Header(default=None)) -> PersonOut:
+def create_person(
+    circle_id: str,
+    payload: PersonCreate,
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> PersonOut:
     person_id = str(uuid4())
     now = utc_now()
     normalized_name = payload.full_name.strip()
     _validate_person_dates(payload.birth_date, payload.death_date)
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
         dup_hints = _find_person_duplicates(
             conn,
@@ -916,9 +1076,13 @@ def create_person(circle_id: str, payload: PersonCreate, x_user_id: Optional[str
 
 
 @app.get("/circles/{circle_id}/persons", response_model=list[PersonOut])
-def list_persons(circle_id: str, x_user_id: Optional[str] = Header(default=None)) -> list[PersonOut]:
+def list_persons(
+    circle_id: str,
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> list[PersonOut]:
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _get_role(conn, circle_id, actor_user_id)
         rows = conn.execute(
             "SELECT * FROM persons WHERE circle_id = ? ORDER BY created_at DESC",
@@ -935,9 +1099,10 @@ def person_duplicate_hints(
     birth_place: Optional[str] = Query(default=None),
     exclude_person_id: Optional[str] = Query(default=None),
     x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
 ) -> list[DuplicateHintOut]:
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _get_role(conn, circle_id, actor_user_id)
         hints = _find_person_duplicates(
             conn,
@@ -955,9 +1120,10 @@ def list_person_revisions(
     circle_id: str,
     person_id: str,
     x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
 ) -> list[EntityRevisionOut]:
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _get_role(conn, circle_id, actor_user_id)
         person = conn.execute(
             "SELECT id FROM persons WHERE id = ? AND circle_id = ?",
@@ -983,11 +1149,12 @@ def create_person_place(
     person_id: str,
     payload: PersonPlaceCreate,
     x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
 ) -> PersonPlaceOut:
     place_id = str(uuid4())
     now = utc_now()
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
         person = conn.execute(
             "SELECT id FROM persons WHERE id = ? AND circle_id = ?",
@@ -1026,9 +1193,10 @@ def list_person_places(
     circle_id: str,
     person_id: str,
     x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
 ) -> list[PersonPlaceOut]:
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _get_role(conn, circle_id, actor_user_id)
         person = conn.execute(
             "SELECT id FROM persons WHERE id = ? AND circle_id = ?",
@@ -1053,9 +1221,10 @@ def person_migration_geojson(
     circle_id: str,
     person_id: str,
     x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _get_role(conn, circle_id, actor_user_id)
         person = conn.execute(
             "SELECT full_name FROM persons WHERE id = ? AND circle_id = ?",
@@ -1106,11 +1275,12 @@ async def upload_person_media(
     person_id: str,
     file: UploadFile = File(...),
     x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
 ) -> MediaAssetOut:
     asset_id = str(uuid4())
     now = utc_now()
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
         person = conn.execute(
             "SELECT id FROM persons WHERE id = ? AND circle_id = ?",
@@ -1157,9 +1327,10 @@ def list_person_media(
     circle_id: str,
     person_id: str,
     x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
 ) -> list[MediaAssetOut]:
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _get_role(conn, circle_id, actor_user_id)
         rows = conn.execute(
             """
@@ -1179,10 +1350,11 @@ def download_media(
     asset_id: str,
     user_id: Optional[str] = Query(default=None),
     x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
 ) -> FileResponse:
     auth_user_id = x_user_id or user_id
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, auth_user_id)
+        actor_user_id = _require_authenticated_user(conn, auth_user_id, authorization)
         _get_role(conn, circle_id, actor_user_id)
         row = conn.execute(
             "SELECT * FROM media_assets WHERE id = ? AND circle_id = ?",
@@ -1202,7 +1374,12 @@ def download_media(
 
 
 @app.post("/circles/{circle_id}/relationships", response_model=RelationshipOut)
-def create_relationship(circle_id: str, payload: RelationshipCreate, x_user_id: Optional[str] = Header(default=None)) -> RelationshipOut:
+def create_relationship(
+    circle_id: str,
+    payload: RelationshipCreate,
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> RelationshipOut:
     rel_id = str(uuid4())
     now = utc_now()
     normalized_type = _normalize_relationship_type(payload.relationship_type)
@@ -1212,7 +1389,7 @@ def create_relationship(circle_id: str, payload: RelationshipCreate, x_user_id: 
             detail=f"Unsupported relationship_type. Allowed: {', '.join(sorted(SUPPORTED_RELATIONSHIP_TYPES))}",
         )
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
         person_rows = conn.execute(
             "SELECT id FROM persons WHERE circle_id = ? AND id IN (?, ?)",
@@ -1250,9 +1427,13 @@ def create_relationship(circle_id: str, payload: RelationshipCreate, x_user_id: 
 
 
 @app.get("/circles/{circle_id}/relationships", response_model=list[RelationshipOut])
-def list_relationships(circle_id: str, x_user_id: Optional[str] = Header(default=None)) -> list[RelationshipOut]:
+def list_relationships(
+    circle_id: str,
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> list[RelationshipOut]:
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _get_role(conn, circle_id, actor_user_id)
         rows = conn.execute(
             "SELECT * FROM relationships WHERE circle_id = ? ORDER BY created_at DESC",
@@ -1266,11 +1447,12 @@ def create_context_event(
     circle_id: str,
     payload: ContextEventCreate,
     x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
 ) -> ContextEventOut:
     event_id = str(uuid4())
     now = utc_now()
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
         conn.execute(
             """
@@ -1295,9 +1477,13 @@ def create_context_event(
 
 
 @app.get("/circles/{circle_id}/context-events", response_model=list[ContextEventOut])
-def list_context_events(circle_id: str, x_user_id: Optional[str] = Header(default=None)) -> list[ContextEventOut]:
+def list_context_events(
+    circle_id: str,
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> list[ContextEventOut]:
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _get_role(conn, circle_id, actor_user_id)
         rows = conn.execute(
             """
@@ -1316,9 +1502,10 @@ def list_context_event_persons(
     circle_id: str,
     context_event_id: str,
     x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
 ) -> list[PersonOut]:
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _get_role(conn, circle_id, actor_user_id)
         event = conn.execute(
             "SELECT id FROM context_events WHERE id = ? AND circle_id = ?",
@@ -1345,10 +1532,11 @@ def link_context_event_to_person(
     person_id: str,
     payload: PersonContextLinkCreate,
     x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
 ) -> PersonContextLinkOut:
     now = utc_now()
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
 
         person = conn.execute(
@@ -1408,9 +1596,10 @@ def get_person_timeline(
     circle_id: str,
     person_id: str,
     x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
 ) -> list[TimelineItem]:
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _get_role(conn, circle_id, actor_user_id)
 
         person = conn.execute(
@@ -1493,9 +1682,10 @@ def get_subgraph(
     direction: Literal["ancestors", "descendants"] = Query(...),
     depth: int = Query(2, ge=1, le=10),
     x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
 ) -> SubgraphOut:
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _get_role(conn, circle_id, actor_user_id)
         root_exists = conn.execute(
             "SELECT id FROM persons WHERE id = ? AND circle_id = ?",
@@ -1534,11 +1724,12 @@ async def create_or_get_thread(
     circle_id: str,
     payload: DiscussionThreadCreate,
     x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
 ) -> DiscussionThreadOut:
     thread_id = str(uuid4())
     now = utc_now()
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _get_role(conn, circle_id, actor_user_id)
         existing = conn.execute(
             """
@@ -1574,9 +1765,10 @@ def list_thread_messages(
     circle_id: str,
     thread_id: str,
     x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
 ) -> list[DiscussionMessageOut]:
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _get_role(conn, circle_id, actor_user_id)
         thread = conn.execute(
             "SELECT id FROM discussion_threads WHERE id = ? AND circle_id = ?",
@@ -1602,11 +1794,12 @@ async def create_thread_message(
     thread_id: str,
     payload: DiscussionMessageCreate,
     x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
 ) -> DiscussionMessageOut:
     message_id = str(uuid4())
     now = utc_now()
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _get_role(conn, circle_id, actor_user_id)
         thread = conn.execute(
             "SELECT id FROM discussion_threads WHERE id = ? AND circle_id = ?",
@@ -1638,11 +1831,12 @@ def create_change_request(
     circle_id: str,
     payload: ChangeRequestCreate,
     x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
 ) -> ChangeRequestOut:
     cr_id = str(uuid4())
     now = utc_now()
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _get_role(conn, circle_id, actor_user_id)
         if payload.entity_type == "person":
             row = conn.execute(
@@ -1672,9 +1866,13 @@ def create_change_request(
 
 
 @app.get("/circles/{circle_id}/change-requests", response_model=list[ChangeRequestOut])
-def list_change_requests(circle_id: str, x_user_id: Optional[str] = Header(default=None)) -> list[ChangeRequestOut]:
+def list_change_requests(
+    circle_id: str,
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> list[ChangeRequestOut]:
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _get_role(conn, circle_id, actor_user_id)
         rows = conn.execute(
             """
@@ -1693,10 +1891,11 @@ def approve_change_request(
     change_request_id: str,
     payload: ChangeRequestReview,
     x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
 ) -> ChangeRequestOut:
     reviewed_at = utc_now()
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
         row = conn.execute(
             "SELECT * FROM change_requests WHERE id = ? AND circle_id = ?",
@@ -1740,10 +1939,11 @@ def reject_change_request(
     change_request_id: str,
     payload: ChangeRequestReview,
     x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
 ) -> ChangeRequestOut:
     reviewed_at = utc_now()
     with get_conn() as conn:
-        actor_user_id = _require_user(conn, x_user_id)
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
         row = conn.execute(
             "SELECT * FROM change_requests WHERE id = ? AND circle_id = ?",
