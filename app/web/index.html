@@ -439,6 +439,13 @@
 
         const personOptions = useMemo(() => persons.map((p) => ({ value: p.id, label: p.full_name })), [persons]);
         const activeUserName = useMemo(() => users.find((u) => u.id === activeUserId)?.display_name || "", [users, activeUserId]);
+        const activeMembership = useMemo(
+          () => members.find((m) => m.user_id === activeUserId) || null,
+          [members, activeUserId]
+        );
+        const activeCircleRole = activeMembership ? activeMembership.role : null;
+        const canManageMembers = activeCircleRole === "owner";
+        const canEditRecords = activeCircleRole === "owner" || activeCircleRole === "editor";
         const selectedPerson = useMemo(
           () => persons.find((p) => p.id === selectedPersonId) || (subgraph?.persons || []).find((p) => p.id === selectedPersonId) || null,
           [persons, subgraph, selectedPersonId]
@@ -1033,6 +1040,7 @@
                       .concat(circles.map((c) => React.createElement("option", { key: c.id, value: c.id }, c.name)))
                   ),
                   React.createElement("div", { className: "muted", key: "ctx" }, activeUserName ? `Active: ${activeUserName}` : "No active user"),
+                  React.createElement("div", { className: "muted", key: "ctx-role" }, selectedCircle ? `Role: ${activeCircleRole || "none"}` : "Role: n/a"),
                   React.createElement("div", { className: "muted", key: "ctx2" }, authToken ? "Auth: signed in" : "Auth: not signed in (legacy header fallback active)"),
                 ]),
                 React.createElement("details", { className: "card", key: "m" }, [
@@ -1045,8 +1053,9 @@
                       React.createElement("option", { key: "e", value: "editor" }, "editor"),
                       React.createElement("option", { key: "v", value: "viewer" }, "viewer"),
                     ]),
-                    React.createElement("button", { key: "b", type: "submit", disabled: !selectedCircle }, "Add / Update"),
+                    React.createElement("button", { key: "b", type: "submit", disabled: !selectedCircle || !canManageMembers }, "Add / Update"),
                   ]),
+                  React.createElement("div", { className: "muted", key: "perm" }, canManageMembers ? "Owner permission: manage members" : "Only owners can manage members"),
                   React.createElement("div", { className: "list", key: "l" },
                     members.map((m) => {
                       const user = users.find((u) => u.id === m.user_id);
@@ -1064,8 +1073,8 @@
                     React.createElement("input", { key: "r", name: "religion", placeholder: "Religion" }),
                     React.createElement("input", { key: "bd", name: "birth_date", type: "date" }),
                     React.createElement("input", { key: "bp", name: "birth_place", placeholder: "Birth place" }),
-                    React.createElement("button", { key: "chk", type: "button", className: "ghost", onClick: (e) => checkPersonDuplicates(e).catch((x) => setStatus(x.message)), disabled: !selectedCircle }, "Check Duplicates"),
-                    React.createElement("button", { key: "b", type: "submit", disabled: !selectedCircle }, "Add Person"),
+                    React.createElement("button", { key: "chk", type: "button", className: "ghost", onClick: (e) => checkPersonDuplicates(e).catch((x) => setStatus(x.message)), disabled: !selectedCircle || !canEditRecords }, "Check Duplicates"),
+                    React.createElement("button", { key: "b", type: "submit", disabled: !selectedCircle || !canEditRecords }, "Add Person"),
                   ]),
                   duplicateHints.length
                     ? React.createElement(
@@ -1087,8 +1096,9 @@
                       { key: "c", name: "relationship_type", required: true, defaultValue: "parent_of" },
                       RELATIONSHIP_TYPES.map((t) => React.createElement("option", { key: t, value: t }, t))
                     ),
-                    React.createElement("button", { key: "d", type: "submit", disabled: personOptions.length < 2 }, "Link"),
+                    React.createElement("button", { key: "d", type: "submit", disabled: personOptions.length < 2 || !canEditRecords }, "Link"),
                   ]),
+                  React.createElement("div", { className: "muted", key: "perm2" }, canEditRecords ? "Editor permission: records editable" : "Viewer mode: records are read-only"),
                   React.createElement("div", { className: "list", key: "l" },
                     persons.map((p) => React.createElement("div", { className: "item", key: p.id }, `${p.full_name} (${p.religion || "N/A"})`))
                   ),
@@ -1113,6 +1123,7 @@
                                 deleteRelationship(r.id).catch((x) => setStatus(x.message));
                               }
                             },
+                            disabled: !canEditRecords,
                           },
                           "Delete"
                         ),
@@ -1177,7 +1188,7 @@
                           React.createElement("textarea", { key: "f10", name: "medical_notes", placeholder: "Medical notes", defaultValue: selectedPerson.medical_notes || "" }),
                           React.createElement("textarea", { key: "f11", name: "bio_text", placeholder: "Biography / oral history notes", defaultValue: selectedPerson.bio_text || "" }),
                           React.createElement("input", { key: "f12", name: "revision_reason", placeholder: "Revision reason (optional)" }),
-                          React.createElement("button", { key: "f13", type: "submit" }, "Save Profile"),
+                          React.createElement("button", { key: "f13", type: "submit", disabled: !canEditRecords }, "Save Profile"),
                         ]),
                       ])
                     : React.createElement("div", { className: "muted", key: "x" }, "Click a node to inspect profile details."),
@@ -1235,7 +1246,7 @@
                       personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))
                     ),
                     React.createElement("input", { key: "i", type: "file", name: "file" }),
-                    React.createElement("button", { key: "b", type: "submit", disabled: !selectedPersonId }, "Upload"),
+                    React.createElement("button", { key: "b", type: "submit", disabled: !selectedPersonId || !canEditRecords }, "Upload"),
                   ]),
                   React.createElement("div", { className: "list", key: "l" },
                     personMedia.map((m) =>
@@ -1271,7 +1282,7 @@
                     React.createElement("input", { key: "from", name: "from_date", type: "date" }),
                     React.createElement("input", { key: "to", name: "to_date", type: "date" }),
                     React.createElement("input", { key: "notes", name: "notes", placeholder: "Notes" }),
-                    React.createElement("button", { key: "b", type: "submit", disabled: !selectedPersonId }, "Add Place"),
+                    React.createElement("button", { key: "b", type: "submit", disabled: !selectedPersonId || !canEditRecords }, "Add Place"),
                     React.createElement("button", { key: "b2", className: "ghost", type: "button", disabled: !selectedPersonId, onClick: () => loadMigrationGeojson(selectedPersonId).catch((x) => setStatus(x.message)) }, "Load Migration GeoJSON"),
                   ]),
                   migrationGeoJson
@@ -1323,8 +1334,8 @@
                       React.createElement("div", { key: "s" }, `Status: ${cr.status}`),
                       React.createElement("div", { className: "muted", key: "p" }, cr.proposed_patch_json),
                       cr.status === "pending" ? React.createElement("div", { key: "a", style: { marginTop: "6px" } }, [
-                        React.createElement("button", { key: "ap", type: "button", onClick: () => reviewRequest(cr.id, "approve").catch((x) => setStatus(x.message)) }, "Approve"),
-                        React.createElement("button", { key: "rj", type: "button", className: "ghost", onClick: () => reviewRequest(cr.id, "reject").catch((x) => setStatus(x.message)) }, "Reject"),
+                        React.createElement("button", { key: "ap", type: "button", onClick: () => reviewRequest(cr.id, "approve").catch((x) => setStatus(x.message)), disabled: !canEditRecords }, "Approve"),
+                        React.createElement("button", { key: "rj", type: "button", className: "ghost", onClick: () => reviewRequest(cr.id, "reject").catch((x) => setStatus(x.message)), disabled: !canEditRecords }, "Reject"),
                       ]) : null
                     ]))
                   ),
@@ -1343,13 +1354,13 @@
                     ]),
                     React.createElement("input", { key: "l", name: "location_name", placeholder: "Location" }),
                     React.createElement("input", { key: "x", name: "description", placeholder: "Description" }),
-                    React.createElement("button", { key: "b", type: "submit", disabled: !selectedCircle }, "Add Event"),
+                    React.createElement("button", { key: "b", type: "submit", disabled: !selectedCircle || !canEditRecords }, "Add Event"),
                   ]),
                   React.createElement("form", { key: "lnk", onSubmit: (e) => linkEventToPerson(e).catch((x) => setStatus(x.message)) }, [
                     React.createElement("select", { key: "p1", name: "person_id" }, personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))),
                     React.createElement("select", { key: "e1", name: "context_event_id" }, contextEvents.map((e) => React.createElement("option", { key: e.id, value: e.id }, `${e.date} ${e.title}`))),
                     React.createElement("input", { key: "rn", name: "relevance_note", placeholder: "Relevance note" }),
-                    React.createElement("button", { key: "b2", type: "submit", disabled: personOptions.length === 0 || contextEvents.length === 0 }, "Link Event"),
+                    React.createElement("button", { key: "b2", type: "submit", disabled: personOptions.length === 0 || contextEvents.length === 0 || !canEditRecords }, "Link Event"),
                   ]),
                   React.createElement("div", { className: "list", key: "lst" },
                     contextEvents.map((e) => React.createElement("div", { className: "item", key: e.id }, `${e.date} • ${e.title}`))
