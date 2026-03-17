@@ -186,15 +186,15 @@
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script>
       const { useEffect, useMemo, useRef, useState } = React;
-      const RELATIONSHIP_TYPES = [
-        "parent_of",
-        "child_of",
-        "spouse_of",
-        "sibling_of",
-        "aunt_uncle_of",
-        "niece_nephew_of",
-        "cousin_of",
-      ];
+        const RELATIONSHIP_TYPES = [
+          { value: "parent_of", label: "parent_of (A is parent of B)" },
+          { value: "child_of", label: "child_of (A is child of B)" },
+          { value: "spouse_of", label: "spouse_of (A and B are spouses)" },
+          { value: "sibling_of", label: "sibling_of (A and B are siblings)" },
+          { value: "aunt_uncle_of", label: "aunt_uncle_of (A is aunt/uncle of B)" },
+          { value: "niece_nephew_of", label: "niece_nephew_of (A is niece/nephew of B)" },
+          { value: "cousin_of", label: "cousin_of (A and B are cousins)" },
+        ];
 
       function edgeKey(fromId, toId) {
         return `${fromId}->${toId}`;
@@ -304,7 +304,9 @@
         const displayEdges = Array.from(displayEdgeMap.values());
         const pairCounts = new Map();
         displayEdges.forEach((edge) => {
-          const pairKey = `${edge.from_person_id}|${edge.to_person_id}`;
+          const pairKey = undirectedTypes.has(edge.relationship_type)
+            ? [edge.from_person_id, edge.to_person_id].sort().join("|")
+            : `${edge.from_person_id}|${edge.to_person_id}`;
           pairCounts.set(pairKey, (pairCounts.get(pairKey) || 0) + 1);
         });
         const pairSeen = new Map();
@@ -325,13 +327,26 @@
               ])
             ]),
             ...displayEdges.map((e) => {
-              const from = pos[e.from_person_id];
-              const to = pos[e.to_person_id];
+              let fromId = e.from_person_id;
+              let toId = e.to_person_id;
+              let from = pos[fromId];
+              let to = pos[toId];
               if (!from || !to) return null;
-              const pairKey = `${e.from_person_id}|${e.to_person_id}`;
+              const isUndirected = undirectedTypes.has(e.relationship_type);
+              if (isUndirected && from.x > to.x) {
+                fromId = e.to_person_id;
+                toId = e.from_person_id;
+                from = pos[fromId];
+                to = pos[toId];
+              }
+              const pairKey = isUndirected
+                ? [fromId, toId].sort().join("|")
+                : `${fromId}|${toId}`;
               const seen = pairSeen.get(pairKey) || 0;
               pairSeen.set(pairKey, seen + 1);
-              const count = pairCounts.get(pairKey) || 1;
+              const count = pairCounts.get(
+                isUndirected ? [e.from_person_id, e.to_person_id].sort().join("|") : `${e.from_person_id}|${e.to_person_id}`
+              ) || 1;
               const laneOffset = (seen - (count - 1) / 2) * 14;
               const startX = from.x + 80;
               const startY = from.y + 24 + laneOffset;
@@ -353,7 +368,7 @@
                   fill: "none",
                   stroke: isHighlighted ? "#d18b3d" : "#97a8b6",
                   strokeWidth: isHighlighted ? 3.5 : 2,
-                  markerEnd: "url(#arrowhead)"
+                  markerEnd: isUndirected ? undefined : "url(#arrowhead)"
                 }),
                 React.createElement("text", {
                   key: "label",
@@ -438,6 +453,10 @@
         }, [activeUserId, authToken]);
 
         const personOptions = useMemo(() => persons.map((p) => ({ value: p.id, label: p.full_name })), [persons]);
+        const userOptions = useMemo(
+          () => users.map((u) => ({ value: u.id, label: `${u.display_name} (${u.id.slice(0, 8)})` })),
+          [users]
+        );
         const activeUserName = useMemo(() => users.find((u) => u.id === activeUserId)?.display_name || "", [users, activeUserId]);
         const activeMembership = useMemo(
           () => members.find((m) => m.user_id === activeUserId) || null,
@@ -454,6 +473,10 @@
         const highlightedEdgeSet = useMemo(() => new Set(highlightedEdgeKeys), [highlightedEdgeKeys]);
 
         function setActiveUser(id) {
+          if (id !== activeUserId && authToken) {
+            setToken("");
+            setStatus("Signed out due to user switch. Sign in again for the selected user.");
+          }
           setActiveUserId(id);
           localStorage.setItem("activeUserId", id || "");
         }
@@ -537,6 +560,10 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ user_id: activeUserId }),
           });
+          if (data.user && data.user.id && data.user.id !== activeUserId) {
+            setActiveUserId(data.user.id);
+            localStorage.setItem("activeUserId", data.user.id);
+          }
           setToken(data.access_token);
           setStatus("Signed in");
         }
@@ -1026,10 +1053,20 @@
                   React.createElement("label", { key: "l1" }, "Active User"),
                   React.createElement("select", { key: "s1", value: activeUserId, onChange: (e) => setActiveUser(e.target.value) },
                     [React.createElement("option", { key: "x", value: "" }, "Select user")]
-                      .concat(users.map((u) => React.createElement("option", { key: u.id, value: u.id }, u.display_name)))
+                      .concat(userOptions.map((u) => React.createElement("option", { key: u.value, value: u.value }, u.label)))
                   ),
                   React.createElement("button", { key: "signin", type: "button", className: "ghost", onClick: () => loginAsActiveUser().catch((x) => setStatus(x.message)), disabled: !activeUserId }, "Sign In"),
-                  React.createElement("button", { key: "signout", type: "button", className: "ghost", onClick: () => { setToken(""); setStatus("Signed out"); } }, "Sign Out"),
+                  React.createElement("button", {
+                    key: "signout",
+                    type: "button",
+                    className: "ghost",
+                    onClick: () => {
+                      setToken("");
+                      setActiveUserId("");
+                      localStorage.removeItem("activeUserId");
+                      setStatus("Signed out");
+                    }
+                  }, "Sign Out"),
                   React.createElement("form", { key: "f2", onSubmit: (e) => createCircle(e).catch((x) => setStatus(x.message)) }, [
                     React.createElement("input", { key: "i2", name: "name", required: true, placeholder: "New circle name" }),
                     React.createElement("button", { key: "b2", type: "submit" }, "Create Circle"),
@@ -1047,7 +1084,7 @@
                   React.createElement("summary", { key: "s" }, "Membership"),
                   React.createElement("form", { key: "f", onSubmit: (e) => addMember(e).catch((x) => setStatus(x.message)) }, [
                     React.createElement("select", { key: "s1", name: "user_id" },
-                      users.map((u) => React.createElement("option", { key: u.id, value: u.id }, u.display_name))
+                      userOptions.map((u) => React.createElement("option", { key: u.value, value: u.value }, u.label))
                     ),
                     React.createElement("select", { key: "s2", name: "role" }, [
                       React.createElement("option", { key: "e", value: "editor" }, "editor"),
@@ -1094,10 +1131,11 @@
                     React.createElement(
                       "select",
                       { key: "c", name: "relationship_type", required: true, defaultValue: "parent_of" },
-                      RELATIONSHIP_TYPES.map((t) => React.createElement("option", { key: t, value: t }, t))
+                      RELATIONSHIP_TYPES.map((t) => React.createElement("option", { key: t.value, value: t.value }, t.label))
                     ),
                     React.createElement("button", { key: "d", type: "submit", disabled: personOptions.length < 2 || !canEditRecords }, "Link"),
                   ]),
+                  React.createElement("div", { className: "muted", key: "rel-help" }, "Direction rule: Person A (first dropdown) -> Person B (second dropdown)."),
                   React.createElement("div", { className: "muted", key: "perm2" }, canEditRecords ? "Editor permission: records editable" : "Viewer mode: records are read-only"),
                   React.createElement("div", { className: "list", key: "l" },
                     persons.map((p) => React.createElement("div", { className: "item", key: p.id }, `${p.full_name} (${p.religion || "N/A"})`))
