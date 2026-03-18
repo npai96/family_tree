@@ -444,6 +444,12 @@
         const [highlightedEdgeKeys, setHighlightedEdgeKeys] = useState([]);
         const [zoom, setZoom] = useState(1);
         const [graphSize, setGraphSize] = useState({ width: 1000, height: 600 });
+        const [editingRelationshipId, setEditingRelationshipId] = useState("");
+        const [editRelationshipDraft, setEditRelationshipDraft] = useState({
+          from_person_id: "",
+          to_person_id: "",
+          relationship_type: "parent_of",
+        });
         const graphViewportRef = useRef(null);
 
         const headers = useMemo(() => {
@@ -712,19 +718,71 @@
           await loadCircleData(selectedCircle);
         }
 
-        async function deleteRelationship(relationshipId) {
-          await requestJson(`/circles/${selectedCircle}/relationships/${relationshipId}`, {
+        async function deleteRelationship(relationshipId, circleId) {
+          const targetCircleId = circleId || selectedCircle;
+          if (!targetCircleId) {
+            throw new Error("No active circle selected");
+          }
+          await requestJson(`/circles/${targetCircleId}/relationships/${relationshipId}`, {
             method: "DELETE",
             headers,
           });
           setStatus("Relationship deleted");
-          await loadCircleData(selectedCircle);
+          await loadCircleData(targetCircleId);
           if (subgraph) {
             setSubgraph((prev) => {
               if (!prev) return prev;
               return {
                 ...prev,
-                relationships: (prev.relationships || []).filter((r) => r.id !== relationshipId),
+                relationships: (prev.relationships || []).filter(
+                  (r) => r.id !== relationshipId && r.id !== `reverse:${relationshipId}`
+                ),
+              };
+            });
+          }
+        }
+
+        function startEditRelationship(r) {
+          setEditingRelationshipId(r.id);
+          setEditRelationshipDraft({
+            from_person_id: r.from_person_id,
+            to_person_id: r.to_person_id,
+            relationship_type: r.relationship_type,
+          });
+        }
+
+        async function saveRelationshipEdit(circleId) {
+          if (!editingRelationshipId) return;
+          const targetCircleId = circleId || selectedCircle;
+          if (!targetCircleId) {
+            throw new Error("No active circle selected");
+          }
+          const updated = await requestJson(`/circles/${targetCircleId}/relationships/${editingRelationshipId}`, {
+            method: "PATCH",
+            headers,
+            body: JSON.stringify(editRelationshipDraft),
+          });
+          setStatus("Relationship updated");
+          setEditingRelationshipId("");
+          await loadCircleData(targetCircleId);
+          if (subgraph) {
+            setSubgraph((prev) => {
+              if (!prev) return prev;
+              const reverseId = `reverse:${updated.id}`;
+              return {
+                ...prev,
+                relationships: (prev.relationships || []).map((r) => {
+                  if (r.id === updated.id) return updated;
+                  if (r.id === reverseId) {
+                    return {
+                      ...r,
+                      from_person_id: updated.to_person_id,
+                      to_person_id: updated.from_person_id,
+                      relationship_type: updated.relationship_type,
+                    };
+                  }
+                  return r;
+                }),
               };
             });
           }
@@ -1145,26 +1203,74 @@
                     relationships.map((r) => {
                       const fromName = persons.find((p) => p.id === r.from_person_id)?.full_name || r.from_person_id.slice(0, 8);
                       const toName = persons.find((p) => p.id === r.to_person_id)?.full_name || r.to_person_id.slice(0, 8);
+                      const isEditing = editingRelationshipId === r.id;
                       return React.createElement("div", { className: "item", key: r.id }, [
-                        React.createElement("div", { key: "txt", style: { display: "grid", gap: "2px" } }, [
-                          React.createElement("span", { key: "a" }, `${fromName} -> ${toName}`),
-                          React.createElement("span", { key: "b", className: "muted" }, r.relationship_type),
-                        ]),
-                        React.createElement(
-                          "button",
-                          {
-                            key: "del",
-                            type: "button",
-                            className: "ghost",
-                            onClick: () => {
-                              if (window.confirm("Delete this relationship?")) {
-                                deleteRelationship(r.id).catch((x) => setStatus(x.message));
-                              }
-                            },
-                            disabled: !canEditRecords,
-                          },
-                          "Delete"
-                        ),
+                        isEditing
+                          ? React.createElement("div", { key: "edit", style: { display: "grid", gap: "6px", width: "100%" } }, [
+                              React.createElement("select", {
+                                key: "ef",
+                                value: editRelationshipDraft.from_person_id,
+                                onChange: (e) => setEditRelationshipDraft((prev) => ({ ...prev, from_person_id: e.target.value })),
+                              }, personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))),
+                              React.createElement("select", {
+                                key: "et",
+                                value: editRelationshipDraft.to_person_id,
+                                onChange: (e) => setEditRelationshipDraft((prev) => ({ ...prev, to_person_id: e.target.value })),
+                              }, personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))),
+                              React.createElement("select", {
+                                key: "er",
+                                value: editRelationshipDraft.relationship_type,
+                                onChange: (e) => setEditRelationshipDraft((prev) => ({ ...prev, relationship_type: e.target.value })),
+                              }, RELATIONSHIP_TYPES.map((t) => React.createElement("option", { key: t.value, value: t.value }, t.label))),
+                              React.createElement("div", { key: "ea", style: { display: "flex", gap: "6px" } }, [
+                                React.createElement("button", {
+                                  key: "save",
+                                  type: "button",
+                                  onClick: () => saveRelationshipEdit(r.circle_id).catch((x) => setStatus(x.message)),
+                                  disabled: !canEditRecords,
+                                }, "Save"),
+                                React.createElement("button", {
+                                  key: "cancel",
+                                  type: "button",
+                                  className: "ghost",
+                                  onClick: () => setEditingRelationshipId(""),
+                                }, "Cancel"),
+                              ]),
+                            ])
+                          : React.createElement("div", { key: "txt", style: { display: "grid", gap: "2px" } }, [
+                              React.createElement("span", { key: "a" }, `${fromName} -> ${toName}`),
+                              React.createElement("span", { key: "b", className: "muted" }, r.relationship_type),
+                            ]),
+                        isEditing
+                          ? null
+                          : React.createElement("div", { key: "actions", style: { display: "flex", gap: "6px" } }, [
+                              React.createElement(
+                                "button",
+                                {
+                                  key: "edit",
+                                  type: "button",
+                                  className: "ghost",
+                                  onClick: () => startEditRelationship(r),
+                                  disabled: !canEditRecords,
+                                },
+                                "Edit"
+                              ),
+                              React.createElement(
+                                "button",
+                                {
+                                  key: "del",
+                                  type: "button",
+                                  className: "ghost",
+                                  onClick: () => {
+                                    if (window.confirm("Delete this relationship?")) {
+                                      deleteRelationship(r.id, r.circle_id).catch((x) => setStatus(x.message));
+                                    }
+                                  },
+                                  disabled: !canEditRecords,
+                                },
+                                "Delete"
+                              ),
+                            ]),
                       ]);
                     })
                   ),

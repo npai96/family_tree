@@ -77,6 +77,18 @@ def test_end_to_end_graph_flow_with_membership(tmp_path: Path) -> None:
     assert len(descendants.json()["persons"]) == 2
     assert len(descendants.json()["relationships"]) == 1
 
+    ancestors = client.get(
+        f"/circles/{circle_id}/graph/subgraph",
+        params={"root_person_id": child_id, "direction": "ancestors", "depth": 3},
+        headers={"X-User-Id": owner_id},
+    )
+    assert ancestors.status_code == 200
+    ancestor_edges = ancestors.json()["relationships"]
+    assert len(ancestor_edges) == 1
+    assert ancestor_edges[0]["from_person_id"] == child_id
+    assert ancestor_edges[0]["to_person_id"] == parent_id
+    assert ancestor_edges[0]["relationship_type"] == "child_of"
+
 
 def test_change_request_approval_updates_person(tmp_path: Path) -> None:
     client = build_client(tmp_path)
@@ -472,6 +484,76 @@ def test_relationship_delete_permissions(tmp_path: Path) -> None:
     rels = client.get(f"/circles/{circle_id}/relationships", headers={"X-User-Id": owner_id})
     assert rels.status_code == 200
     assert rels.json() == []
+
+
+def test_relationship_update_permissions_and_cycle_checks(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    owner_id = create_user(client, "Owner")
+    editor_id = create_user(client, "Editor")
+    viewer_id = create_user(client, "Viewer")
+
+    circle = client.post("/circles", json={"name": "Update Family"}, headers={"X-User-Id": owner_id})
+    circle_id = circle.json()["id"]
+    assert client.post(
+        f"/circles/{circle_id}/members",
+        json={"user_id": editor_id, "role": "editor"},
+        headers={"X-User-Id": owner_id},
+    ).status_code == 200
+    assert client.post(
+        f"/circles/{circle_id}/members",
+        json={"user_id": viewer_id, "role": "viewer"},
+        headers={"X-User-Id": owner_id},
+    ).status_code == 200
+
+    a = client.post(f"/circles/{circle_id}/persons", json={"full_name": "A"}, headers={"X-User-Id": owner_id}).json()["id"]
+    b = client.post(f"/circles/{circle_id}/persons", json={"full_name": "B"}, headers={"X-User-Id": owner_id}).json()["id"]
+    c = client.post(f"/circles/{circle_id}/persons", json={"full_name": "C"}, headers={"X-User-Id": owner_id}).json()["id"]
+
+    rel_ab = client.post(
+        f"/circles/{circle_id}/relationships",
+        json={"from_person_id": a, "to_person_id": b, "relationship_type": "parent_of"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert rel_ab.status_code == 200
+    rel_ab_id = rel_ab.json()["id"]
+
+    rel_bc = client.post(
+        f"/circles/{circle_id}/relationships",
+        json={"from_person_id": b, "to_person_id": c, "relationship_type": "parent_of"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert rel_bc.status_code == 200
+
+    forbidden = client.patch(
+        f"/circles/{circle_id}/relationships/{rel_ab_id}",
+        json={"relationship_type": "spouse_of"},
+        headers={"X-User-Id": viewer_id},
+    )
+    assert forbidden.status_code == 403
+
+    updated = client.patch(
+        f"/circles/{circle_id}/relationships/{rel_ab_id}",
+        json={"relationship_type": "child_of"},
+        headers={"X-User-Id": editor_id},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["relationship_type"] == "child_of"
+
+    # Turning A->B into parent_of while B->C exists should still be valid.
+    valid_parent = client.patch(
+        f"/circles/{circle_id}/relationships/{rel_ab_id}",
+        json={"relationship_type": "parent_of"},
+        headers={"X-User-Id": editor_id},
+    )
+    assert valid_parent.status_code == 200
+
+    # Updating A->B to C->B as parent_of creates cycle: B->C and C->B.
+    cycle = client.patch(
+        f"/circles/{circle_id}/relationships/{rel_ab_id}",
+        json={"from_person_id": c, "to_person_id": b, "relationship_type": "parent_of"},
+        headers={"X-User-Id": editor_id},
+    )
+    assert cycle.status_code == 400
 
 
 def test_person_patch_updates_profile_and_revisions(tmp_path: Path) -> None:

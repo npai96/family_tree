@@ -326,6 +326,12 @@ class RelationshipCreate(BaseModel):
     relationship_type: str = Field(min_length=1, max_length=100)
 
 
+class RelationshipUpdate(BaseModel):
+    from_person_id: Optional[str] = None
+    to_person_id: Optional[str] = None
+    relationship_type: Optional[str] = Field(default=None, min_length=1, max_length=100)
+
+
 class RelationshipOut(BaseModel):
     id: str
     circle_id: str
@@ -635,6 +641,16 @@ def _normalize_relationship_type(raw: str) -> str:
     return value
 
 
+def _inverse_relationship_type(relationship_type: str) -> str:
+    inverse = {
+        "parent_of": "child_of",
+        "child_of": "parent_of",
+        "aunt_uncle_of": "niece_nephew_of",
+        "niece_nephew_of": "aunt_uncle_of",
+    }
+    return inverse.get(relationship_type, relationship_type)
+
+
 def _validate_person_dates(birth_date: Optional[str], death_date: Optional[str]) -> None:
     if birth_date and death_date and death_date < birth_date:
         raise HTTPException(status_code=400, detail="death_date must be on/after birth_date")
@@ -686,7 +702,13 @@ def _find_person_duplicates(
     return hints
 
 
-def _would_create_parent_cycle(conn: sqlite3.Connection, circle_id: str, parent_id: str, child_id: str) -> bool:
+def _would_create_parent_cycle(
+    conn: sqlite3.Connection,
+    circle_id: str,
+    parent_id: str,
+    child_id: str,
+    exclude_relationship_id: Optional[str] = None,
+) -> bool:
     if parent_id == child_id:
         return True
     stack = [child_id]
@@ -700,13 +722,16 @@ def _would_create_parent_cycle(conn: sqlite3.Connection, circle_id: str, parent_
         visited.add(cur)
         rows = conn.execute(
             """
-            SELECT to_person_id
+            SELECT id, to_person_id
             FROM relationships
             WHERE circle_id = ? AND from_person_id = ? AND relationship_type = 'parent_of'
             """,
             (circle_id, cur),
         ).fetchall()
-        stack.extend([row["to_person_id"] for row in rows])
+        for row in rows:
+            if exclude_relationship_id and row["id"] == exclude_relationship_id:
+                continue
+            stack.append(row["to_person_id"])
     return False
 
 
@@ -777,7 +802,7 @@ def _load_edges(circle_id: str, direction: str) -> dict[str, list[Edge]]:
                 edge_id=f"reverse:{edge.edge_id}",
                 from_person_id=edge.to_person_id,
                 to_person_id=edge.from_person_id,
-                relationship_type=edge.relationship_type,
+                relationship_type=_inverse_relationship_type(edge.relationship_type),
                 created_at=edge.created_at,
             )
             adjacency.setdefault(reversed_edge.from_person_id, []).append(reversed_edge)
@@ -1520,6 +1545,70 @@ def list_relationships(
             (circle_id,),
         ).fetchall()
     return [RelationshipOut(**dict(row)) for row in rows]
+
+
+@app.patch("/circles/{circle_id}/relationships/{relationship_id}", response_model=RelationshipOut)
+def update_relationship(
+    circle_id: str,
+    relationship_id: str,
+    payload: RelationshipUpdate,
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> RelationshipOut:
+    with get_conn() as conn:
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
+        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        existing = conn.execute(
+            """
+            SELECT id, circle_id, from_person_id, to_person_id, relationship_type, created_at
+            FROM relationships
+            WHERE id = ? AND circle_id = ?
+            """,
+            (relationship_id, circle_id),
+        ).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="Relationship not found")
+
+        patch = payload.model_dump(exclude_unset=True)
+        if not patch:
+            raise HTTPException(status_code=400, detail="No relationship fields provided for update")
+
+        next_from = patch.get("from_person_id", existing["from_person_id"])
+        next_to = patch.get("to_person_id", existing["to_person_id"])
+        next_type_raw = patch.get("relationship_type", existing["relationship_type"])
+        next_type = _normalize_relationship_type(next_type_raw)
+        if next_type not in SUPPORTED_RELATIONSHIP_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported relationship_type. Allowed: {', '.join(sorted(SUPPORTED_RELATIONSHIP_TYPES))}",
+            )
+        person_rows = conn.execute(
+            "SELECT id FROM persons WHERE circle_id = ? AND id IN (?, ?)",
+            (circle_id, next_from, next_to),
+        ).fetchall()
+        if len(person_rows) != 2:
+            raise HTTPException(status_code=400, detail="Both persons must exist in circle")
+        if next_type == "parent_of" and _would_create_parent_cycle(
+            conn,
+            circle_id,
+            next_from,
+            next_to,
+            exclude_relationship_id=relationship_id,
+        ):
+            raise HTTPException(status_code=400, detail="parent_of would create a cycle in ancestry graph")
+        try:
+            conn.execute(
+                """
+                UPDATE relationships
+                SET from_person_id = ?, to_person_id = ?, relationship_type = ?
+                WHERE id = ? AND circle_id = ?
+                """,
+                (next_from, next_to, next_type, relationship_id, circle_id),
+            )
+        except sqlite3.IntegrityError as err:
+            raise HTTPException(status_code=409, detail=str(err)) from err
+        row = conn.execute("SELECT * FROM relationships WHERE id = ?", (relationship_id,)).fetchone()
+    return RelationshipOut(**dict(row))
 
 
 @app.delete("/circles/{circle_id}/relationships/{relationship_id}")
