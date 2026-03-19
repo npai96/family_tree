@@ -542,6 +542,11 @@ SUPPORTED_RELATIONSHIP_TYPES = {
     "niece_nephew_of",
     "cousin_of",
 }
+UNDIRECTED_RELATIONSHIP_TYPES = {
+    "spouse_of",
+    "sibling_of",
+    "cousin_of",
+}
 
 
 def _require_user(conn: sqlite3.Connection, user_id: Optional[str]) -> str:
@@ -649,6 +654,12 @@ def _inverse_relationship_type(relationship_type: str) -> str:
         "niece_nephew_of": "aunt_uncle_of",
     }
     return inverse.get(relationship_type, relationship_type)
+
+
+def _canonicalize_relationship_endpoints(from_person_id: str, to_person_id: str, relationship_type: str) -> tuple[str, str]:
+    if relationship_type in UNDIRECTED_RELATIONSHIP_TYPES and from_person_id > to_person_id:
+        return to_person_id, from_person_id
+    return from_person_id, to_person_id
 
 
 def _validate_person_dates(birth_date: Optional[str], death_date: Optional[str]) -> None:
@@ -788,25 +799,98 @@ def _load_edges(circle_id: str, direction: str) -> dict[str, list[Edge]]:
 
     adjacency: dict[str, list[Edge]] = {}
     for row in rows:
-        edge = Edge(
-            edge_id=row["id"],
-            from_person_id=row["from_person_id"],
-            to_person_id=row["to_person_id"],
-            relationship_type=row["relationship_type"],
-            created_at=row["created_at"],
-        )
+        rel_type = row["relationship_type"]
+        if rel_type == "parent_of":
+            parent_id = row["from_person_id"]
+            child_id = row["to_person_id"]
+        elif rel_type == "child_of":
+            parent_id = row["to_person_id"]
+            child_id = row["from_person_id"]
+        else:
+            # Ancestor/descendant traversal should follow lineage only.
+            continue
+
         if direction == "descendants":
+            edge = Edge(
+                edge_id=row["id"],
+                from_person_id=parent_id,
+                to_person_id=child_id,
+                relationship_type="parent_of",
+                created_at=row["created_at"],
+            )
             adjacency.setdefault(edge.from_person_id, []).append(edge)
         else:
-            reversed_edge = Edge(
-                edge_id=f"reverse:{edge.edge_id}",
-                from_person_id=edge.to_person_id,
-                to_person_id=edge.from_person_id,
-                relationship_type=_inverse_relationship_type(edge.relationship_type),
-                created_at=edge.created_at,
+            edge = Edge(
+                edge_id=f"reverse:{row['id']}",
+                from_person_id=child_id,
+                to_person_id=parent_id,
+                relationship_type="child_of",
+                created_at=row["created_at"],
             )
-            adjacency.setdefault(reversed_edge.from_person_id, []).append(reversed_edge)
+            adjacency.setdefault(edge.from_person_id, []).append(edge)
     return adjacency
+
+
+def _parse_lateral_relationship_types(raw: Optional[str]) -> set[str]:
+    if not raw:
+        return set()
+    out: set[str] = set()
+    for part in raw.split(","):
+        norm = _normalize_relationship_type(part)
+        if norm in SUPPORTED_RELATIONSHIP_TYPES and norm not in {"parent_of", "child_of"}:
+            out.add(norm)
+    return out
+
+
+def _expand_lateral_edges(
+    circle_id: str,
+    base_person_ids: set[str],
+    existing_edges: dict[str, Edge],
+    allowed_relationship_types: set[str],
+    lateral_depth: int,
+) -> tuple[set[str], dict[str, Edge]]:
+    if not allowed_relationship_types or lateral_depth <= 0 or not base_person_ids:
+        return base_person_ids, existing_edges
+
+    with get_conn() as conn:
+        placeholders = ",".join("?" for _ in allowed_relationship_types)
+        rows = conn.execute(
+            f"""
+            SELECT id, from_person_id, to_person_id, relationship_type, created_at
+            FROM relationships
+            WHERE circle_id = ? AND relationship_type IN ({placeholders})
+            """,
+            (circle_id, *sorted(allowed_relationship_types)),
+        ).fetchall()
+
+    person_ids = set(base_person_ids)
+    edges = dict(existing_edges)
+    frontier = set(base_person_ids)
+    for _ in range(lateral_depth):
+        next_frontier: set[str] = set()
+        for row in rows:
+            a = row["from_person_id"]
+            b = row["to_person_id"]
+            if a not in frontier and b not in frontier:
+                continue
+            edge_id = f"lateral:{row['id']}"
+            edges[edge_id] = Edge(
+                edge_id=edge_id,
+                from_person_id=a,
+                to_person_id=b,
+                relationship_type=row["relationship_type"],
+                created_at=row["created_at"],
+            )
+            if a not in person_ids:
+                person_ids.add(a)
+                next_frontier.add(a)
+            if b not in person_ids:
+                person_ids.add(b)
+                next_frontier.add(b)
+        if not next_frontier:
+            break
+        frontier = next_frontier
+    return person_ids, edges
 
 
 def _traverse(root_person_id: str, adjacency: dict[str, list[Edge]], max_depth: int) -> tuple[set[str], dict[str, Edge]]:
@@ -1496,17 +1580,24 @@ def create_relationship(
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        from_person_id, to_person_id = _canonicalize_relationship_endpoints(
+            payload.from_person_id,
+            payload.to_person_id,
+            normalized_type,
+        )
+        if from_person_id == to_person_id:
+            raise HTTPException(status_code=400, detail="Self-relationship is not allowed")
         person_rows = conn.execute(
             "SELECT id FROM persons WHERE circle_id = ? AND id IN (?, ?)",
-            (circle_id, payload.from_person_id, payload.to_person_id),
+            (circle_id, from_person_id, to_person_id),
         ).fetchall()
         if len(person_rows) != 2:
             raise HTTPException(status_code=400, detail="Both persons must exist in circle")
         if normalized_type == "parent_of" and _would_create_parent_cycle(
             conn,
             circle_id,
-            payload.from_person_id,
-            payload.to_person_id,
+            from_person_id,
+            to_person_id,
         ):
             raise HTTPException(status_code=400, detail="parent_of would create a cycle in ancestry graph")
         try:
@@ -1519,8 +1610,8 @@ def create_relationship(
                 (
                     rel_id,
                     circle_id,
-                    payload.from_person_id,
-                    payload.to_person_id,
+                    from_person_id,
+                    to_person_id,
                     normalized_type,
                     now,
                 ),
@@ -1582,6 +1673,9 @@ def update_relationship(
                 status_code=400,
                 detail=f"Unsupported relationship_type. Allowed: {', '.join(sorted(SUPPORTED_RELATIONSHIP_TYPES))}",
             )
+        next_from, next_to = _canonicalize_relationship_endpoints(next_from, next_to, next_type)
+        if next_from == next_to:
+            raise HTTPException(status_code=400, detail="Self-relationship is not allowed")
         person_rows = conn.execute(
             "SELECT id FROM persons WHERE circle_id = ? AND id IN (?, ?)",
             (circle_id, next_from, next_to),
@@ -1622,15 +1716,36 @@ def delete_relationship(
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
         row = conn.execute(
-            "SELECT id FROM relationships WHERE id = ? AND circle_id = ?",
+            "SELECT id, from_person_id, to_person_id, relationship_type FROM relationships WHERE id = ? AND circle_id = ?",
             (relationship_id, circle_id),
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Relationship not found")
-        conn.execute(
-            "DELETE FROM relationships WHERE id = ? AND circle_id = ?",
-            (relationship_id, circle_id),
-        )
+        if row["relationship_type"] in UNDIRECTED_RELATIONSHIP_TYPES:
+            conn.execute(
+                """
+                DELETE FROM relationships
+                WHERE circle_id = ? AND relationship_type = ?
+                  AND (
+                    (from_person_id = ? AND to_person_id = ?)
+                    OR
+                    (from_person_id = ? AND to_person_id = ?)
+                  )
+                """,
+                (
+                    circle_id,
+                    row["relationship_type"],
+                    row["from_person_id"],
+                    row["to_person_id"],
+                    row["to_person_id"],
+                    row["from_person_id"],
+                ),
+            )
+        else:
+            conn.execute(
+                "DELETE FROM relationships WHERE id = ? AND circle_id = ?",
+                (relationship_id, circle_id),
+            )
     return {"status": "deleted", "relationship_id": relationship_id}
 
 
@@ -1873,6 +1988,9 @@ def get_subgraph(
     root_person_id: str = Query(...),
     direction: Literal["ancestors", "descendants"] = Query(...),
     depth: int = Query(2, ge=1, le=10),
+    mode: Literal["lineage", "family_expanded"] = Query("lineage"),
+    lateral_types: Optional[str] = Query(default="spouse_of,sibling_of,cousin_of"),
+    lateral_depth: int = Query(1, ge=0, le=4),
     x_user_id: Optional[str] = Header(default=None),
     authorization: Optional[str] = Header(default=None),
 ) -> SubgraphOut:
@@ -1888,6 +2006,14 @@ def get_subgraph(
 
     adjacency = _load_edges(circle_id, direction)
     seen_person_ids, seen_edges = _traverse(root_person_id, adjacency, depth)
+    if mode == "family_expanded":
+        seen_person_ids, seen_edges = _expand_lateral_edges(
+            circle_id=circle_id,
+            base_person_ids=seen_person_ids,
+            existing_edges=seen_edges,
+            allowed_relationship_types=_parse_lateral_relationship_types(lateral_types),
+            lateral_depth=lateral_depth,
+        )
 
     with get_conn() as conn:
         placeholders = ",".join("?" for _ in seen_person_ids)

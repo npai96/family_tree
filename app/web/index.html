@@ -310,6 +310,15 @@
           pairCounts.set(pairKey, (pairCounts.get(pairKey) || 0) + 1);
         });
         const pairSeen = new Map();
+        const directedIncomingCounts = new Map();
+        const directedOutgoingCounts = new Map();
+        displayEdges.forEach((edge) => {
+          if (undirectedTypes.has(edge.relationship_type)) return;
+          directedIncomingCounts.set(edge.to_person_id, (directedIncomingCounts.get(edge.to_person_id) || 0) + 1);
+          directedOutgoingCounts.set(edge.from_person_id, (directedOutgoingCounts.get(edge.from_person_id) || 0) + 1);
+        });
+        const directedIncomingSeen = new Map();
+        const directedOutgoingSeen = new Map();
 
         return React.createElement("svg", { width: Math.ceil(width * zoom), height: Math.ceil(height * zoom) }, [
           React.createElement("g", { key: "scale", transform: `scale(${zoom})` }, [
@@ -348,13 +357,52 @@
                 isUndirected ? [e.from_person_id, e.to_person_id].sort().join("|") : `${e.from_person_id}|${e.to_person_id}`
               ) || 1;
               const laneOffset = (seen - (count - 1) / 2) * 14;
-              const startX = from.x + 80;
-              const startY = from.y + 24 + laneOffset;
-              const endX = to.x - 80;
-              const endY = to.y + 24 + laneOffset;
-              const controlDelta = Math.max(44, Math.abs(endX - startX) * 0.35);
-              const control1X = startX + controlDelta;
-              const control2X = endX - controlDelta;
+              let sourceSpread = 0;
+              let targetSpread = 0;
+              if (!isUndirected) {
+                const outSeen = directedOutgoingSeen.get(fromId) || 0;
+                directedOutgoingSeen.set(fromId, outSeen + 1);
+                const outCount = directedOutgoingCounts.get(fromId) || 1;
+                sourceSpread = (outSeen - (outCount - 1) / 2) * 10;
+
+                const inSeen = directedIncomingSeen.get(toId) || 0;
+                directedIncomingSeen.set(toId, inSeen + 1);
+                const inCount = directedIncomingCounts.get(toId) || 1;
+                targetSpread = (inSeen - (inCount - 1) / 2) * 10;
+              }
+              const deltaX = to.x - from.x;
+              const deltaY = to.y - from.y;
+              const isPrimarilyVertical = Math.abs(deltaY) > Math.abs(deltaX);
+              let startX;
+              let startY;
+              let endX;
+              let endY;
+              let control1X;
+              let control1Y;
+              let control2X;
+              let control2Y;
+              if (isPrimarilyVertical) {
+                const fromDown = to.y >= from.y;
+                startX = from.x + laneOffset + sourceSpread;
+                startY = from.y + (fromDown ? 48 : 0);
+                endX = to.x + laneOffset + targetSpread;
+                endY = to.y + (fromDown ? 0 : 48);
+                const controlDeltaY = Math.max(36, Math.abs(endY - startY) * 0.35);
+                control1X = startX;
+                control1Y = startY + (fromDown ? controlDeltaY : -controlDeltaY);
+                control2X = endX;
+                control2Y = endY - (fromDown ? controlDeltaY : -controlDeltaY);
+              } else {
+                startX = from.x + 80;
+                startY = from.y + 24 + laneOffset + sourceSpread;
+                endX = to.x - 80;
+                endY = to.y + 24 + laneOffset + targetSpread;
+                const controlDeltaX = Math.max(44, Math.abs(endX - startX) * 0.35);
+                control1X = startX + controlDeltaX;
+                control1Y = startY;
+                control2X = endX - controlDeltaX;
+                control2Y = endY;
+              }
               const labelX = (startX + endX) / 2;
               const labelY = (startY + endY) / 2 - 9;
               const isHighlighted = (
@@ -364,7 +412,7 @@
               return React.createElement("g", { key: e.id }, [
                 React.createElement("path", {
                   key: "line",
-                  d: `M ${startX} ${startY} C ${control1X} ${startY}, ${control2X} ${endY}, ${endX} ${endY}`,
+                  d: `M ${startX} ${startY} C ${control1X} ${control1Y}, ${control2X} ${control2Y}, ${endX} ${endY}`,
                   fill: "none",
                   stroke: isHighlighted ? "#d18b3d" : "#97a8b6",
                   strokeWidth: isHighlighted ? 3.5 : 2,
@@ -436,6 +484,11 @@
         const [duplicateHints, setDuplicateHints] = useState([]);
         const [subgraph, setSubgraph] = useState(null);
         const [lastRoot, setLastRoot] = useState("");
+        const [lastDirection, setLastDirection] = useState("descendants");
+        const [lastDepth, setLastDepth] = useState(2);
+        const [lastMode, setLastMode] = useState("lineage");
+        const [lastLateralTypes, setLastLateralTypes] = useState("spouse_of,sibling_of,cousin_of");
+        const [lastLateralDepth, setLastLateralDepth] = useState(1);
         const [status, setStatus] = useState("");
         const [leftOpen, setLeftOpen] = useState(true);
         const [rightOpen, setRightOpen] = useState(true);
@@ -716,6 +769,22 @@
           setStatus("Relationship created");
           e.target.reset();
           await loadCircleData(selectedCircle);
+          await reloadSubgraph(selectedCircle);
+        }
+
+        async function reloadSubgraph(circleIdOverride) {
+          const circleId = circleIdOverride || selectedCircle;
+          if (!circleId || !lastRoot) return;
+          const data = await requestJson(
+            `/circles/${circleId}/graph/subgraph?root_person_id=${lastRoot}&direction=${lastDirection}&depth=${lastDepth}&mode=${encodeURIComponent(lastMode)}&lateral_types=${encodeURIComponent(lastLateralTypes)}&lateral_depth=${Number(lastLateralDepth || 0)}`,
+            { headers }
+          );
+          setSubgraph(data);
+          if (selectedPersonId && !data.persons.some((p) => p.id === selectedPersonId)) {
+            setSelectedPersonId(lastRoot);
+            setHighlightedNodeIds([lastRoot]);
+            setHighlightedEdgeKeys([]);
+          }
         }
 
         async function deleteRelationship(relationshipId, circleId) {
@@ -729,17 +798,7 @@
           });
           setStatus("Relationship deleted");
           await loadCircleData(targetCircleId);
-          if (subgraph) {
-            setSubgraph((prev) => {
-              if (!prev) return prev;
-              return {
-                ...prev,
-                relationships: (prev.relationships || []).filter(
-                  (r) => r.id !== relationshipId && r.id !== `reverse:${relationshipId}`
-                ),
-              };
-            });
-          }
+          await reloadSubgraph(targetCircleId);
         }
 
         function startEditRelationship(r) {
@@ -757,7 +816,7 @@
           if (!targetCircleId) {
             throw new Error("No active circle selected");
           }
-          const updated = await requestJson(`/circles/${targetCircleId}/relationships/${editingRelationshipId}`, {
+          await requestJson(`/circles/${targetCircleId}/relationships/${editingRelationshipId}`, {
             method: "PATCH",
             headers,
             body: JSON.stringify(editRelationshipDraft),
@@ -765,38 +824,28 @@
           setStatus("Relationship updated");
           setEditingRelationshipId("");
           await loadCircleData(targetCircleId);
-          if (subgraph) {
-            setSubgraph((prev) => {
-              if (!prev) return prev;
-              const reverseId = `reverse:${updated.id}`;
-              return {
-                ...prev,
-                relationships: (prev.relationships || []).map((r) => {
-                  if (r.id === updated.id) return updated;
-                  if (r.id === reverseId) {
-                    return {
-                      ...r,
-                      from_person_id: updated.to_person_id,
-                      to_person_id: updated.from_person_id,
-                      relationship_type: updated.relationship_type,
-                    };
-                  }
-                  return r;
-                }),
-              };
-            });
-          }
+          await reloadSubgraph(targetCircleId);
         }
 
         async function loadSubgraph(e) {
           e.preventDefault();
           const root = e.target.root_person_id.value;
+          const direction = e.target.direction.value;
+          const depth = Number(e.target.depth.value || 2);
+          const mode = e.target.mode.value || "lineage";
+          const lateralTypes = e.target.lateral_types.value.trim() || "spouse_of,sibling_of,cousin_of";
+          const lateralDepth = Number(e.target.lateral_depth.value || 1);
           const data = await requestJson(
-            `/circles/${selectedCircle}/graph/subgraph?root_person_id=${root}&direction=${e.target.direction.value}&depth=${Number(e.target.depth.value || 2)}`,
+            `/circles/${selectedCircle}/graph/subgraph?root_person_id=${root}&direction=${direction}&depth=${depth}&mode=${encodeURIComponent(mode)}&lateral_types=${encodeURIComponent(lateralTypes)}&lateral_depth=${lateralDepth}`,
             { headers }
           );
           setSubgraph(data);
           setLastRoot(root);
+          setLastDirection(direction);
+          setLastDepth(depth);
+          setLastMode(mode);
+          setLastLateralTypes(lateralTypes);
+          setLastLateralDepth(lateralDepth);
           setSelectedPersonId(root);
           setHighlightedNodeIds([root]);
           setHighlightedEdgeKeys([]);
@@ -1283,13 +1332,19 @@
               React.createElement("div", { className: "graph-scroll", key: "scroll", ref: graphViewportRef }, [
                 React.createElement("div", { style: { padding: "12px 12px 0 12px" }, key: "controls" }, [
                   React.createElement("form", { onSubmit: (e) => loadSubgraph(e).catch((x) => setStatus(x.message)), key: "f" }, [
-                    React.createElement("div", { style: { display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: "8px" }, key: "g" }, [
+                    React.createElement("div", { style: { display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 2fr 1fr", gap: "8px" }, key: "g" }, [
                       React.createElement("select", { key: "p", name: "root_person_id" }, personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))),
                       React.createElement("select", { key: "d", name: "direction" }, [
                         React.createElement("option", { key: "desc", value: "descendants" }, "descendants"),
                         React.createElement("option", { key: "anc", value: "ancestors" }, "ancestors"),
                       ]),
                       React.createElement("input", { key: "depth", type: "number", name: "depth", min: 1, max: 10, defaultValue: 2 }),
+                      React.createElement("select", { key: "m", name: "mode", defaultValue: "lineage" }, [
+                        React.createElement("option", { key: "l", value: "lineage" }, "lineage"),
+                        React.createElement("option", { key: "f", value: "family_expanded" }, "family_expanded"),
+                      ]),
+                      React.createElement("input", { key: "ld", type: "number", name: "lateral_depth", min: 0, max: 4, defaultValue: 1 }),
+                      React.createElement("input", { key: "lt", name: "lateral_types", defaultValue: "spouse_of,sibling_of,cousin_of", placeholder: "spouse_of,sibling_of,cousin_of" }),
                       React.createElement("button", { key: "b", type: "submit", disabled: personOptions.length === 0 }, "Render Graph"),
                     ])
                   ])

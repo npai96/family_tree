@@ -90,6 +90,124 @@ def test_end_to_end_graph_flow_with_membership(tmp_path: Path) -> None:
     assert ancestor_edges[0]["relationship_type"] == "child_of"
 
 
+def test_subgraph_excludes_spouse_edges_from_lineage_traversal(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    owner_id = create_user(client, "Owner")
+    circle = client.post("/circles", json={"name": "Lineage Family"}, headers={"X-User-Id": owner_id})
+    circle_id = circle.json()["id"]
+
+    mom_id = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Mom"},
+        headers={"X-User-Id": owner_id},
+    ).json()["id"]
+    dad_id = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Dad"},
+        headers={"X-User-Id": owner_id},
+    ).json()["id"]
+    child_id = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Child"},
+        headers={"X-User-Id": owner_id},
+    ).json()["id"]
+
+    assert client.post(
+        f"/circles/{circle_id}/relationships",
+        json={"from_person_id": mom_id, "to_person_id": child_id, "relationship_type": "parent_of"},
+        headers={"X-User-Id": owner_id},
+    ).status_code == 200
+    assert client.post(
+        f"/circles/{circle_id}/relationships",
+        json={"from_person_id": dad_id, "to_person_id": child_id, "relationship_type": "parent_of"},
+        headers={"X-User-Id": owner_id},
+    ).status_code == 200
+    assert client.post(
+        f"/circles/{circle_id}/relationships",
+        json={"from_person_id": mom_id, "to_person_id": dad_id, "relationship_type": "spouse_of"},
+        headers={"X-User-Id": owner_id},
+    ).status_code == 200
+
+    descendants = client.get(
+        f"/circles/{circle_id}/graph/subgraph",
+        params={"root_person_id": mom_id, "direction": "descendants", "depth": 2},
+        headers={"X-User-Id": owner_id},
+    )
+    assert descendants.status_code == 200
+    desc_node_ids = {p["id"] for p in descendants.json()["persons"]}
+    desc_edge_types = {r["relationship_type"] for r in descendants.json()["relationships"]}
+    assert dad_id not in desc_node_ids
+    assert desc_edge_types == {"parent_of"}
+
+    ancestors = client.get(
+        f"/circles/{circle_id}/graph/subgraph",
+        params={"root_person_id": dad_id, "direction": "ancestors", "depth": 2},
+        headers={"X-User-Id": owner_id},
+    )
+    assert ancestors.status_code == 200
+    anc_node_ids = {p["id"] for p in ancestors.json()["persons"]}
+    anc_edge_types = {r["relationship_type"] for r in ancestors.json()["relationships"]}
+    assert mom_id not in anc_node_ids
+    assert anc_edge_types in (set(), {"child_of"})
+
+
+def test_subgraph_family_expanded_can_include_lateral_relations(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    owner_id = create_user(client, "Owner")
+    circle = client.post("/circles", json={"name": "Family Expanded"}, headers={"X-User-Id": owner_id})
+    circle_id = circle.json()["id"]
+
+    mom_id = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Mom"},
+        headers={"X-User-Id": owner_id},
+    ).json()["id"]
+    dad_id = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Dad"},
+        headers={"X-User-Id": owner_id},
+    ).json()["id"]
+    child_id = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Child"},
+        headers={"X-User-Id": owner_id},
+    ).json()["id"]
+
+    assert client.post(
+        f"/circles/{circle_id}/relationships",
+        json={"from_person_id": mom_id, "to_person_id": child_id, "relationship_type": "parent_of"},
+        headers={"X-User-Id": owner_id},
+    ).status_code == 200
+    assert client.post(
+        f"/circles/{circle_id}/relationships",
+        json={"from_person_id": dad_id, "to_person_id": child_id, "relationship_type": "parent_of"},
+        headers={"X-User-Id": owner_id},
+    ).status_code == 200
+    assert client.post(
+        f"/circles/{circle_id}/relationships",
+        json={"from_person_id": mom_id, "to_person_id": dad_id, "relationship_type": "spouse_of"},
+        headers={"X-User-Id": owner_id},
+    ).status_code == 200
+
+    descendants_family = client.get(
+        f"/circles/{circle_id}/graph/subgraph",
+        params={
+            "root_person_id": mom_id,
+            "direction": "descendants",
+            "depth": 2,
+            "mode": "family_expanded",
+            "lateral_types": "spouse_of",
+            "lateral_depth": 1,
+        },
+        headers={"X-User-Id": owner_id},
+    )
+    assert descendants_family.status_code == 200
+    node_ids = {p["id"] for p in descendants_family.json()["persons"]}
+    edge_types = {r["relationship_type"] for r in descendants_family.json()["relationships"]}
+    assert dad_id in node_ids
+    assert "spouse_of" in edge_types
+
+
 def test_change_request_approval_updates_person(tmp_path: Path) -> None:
     client = build_client(tmp_path)
     owner_id = create_user(client, "Owner")
@@ -554,6 +672,54 @@ def test_relationship_update_permissions_and_cycle_checks(tmp_path: Path) -> Non
         headers={"X-User-Id": editor_id},
     )
     assert cycle.status_code == 400
+
+
+def test_undirected_relationships_are_canonical_and_delete_reverse_duplicates(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    owner_id = create_user(client, "Owner")
+    circle = client.post("/circles", json={"name": "Undirected Family"}, headers={"X-User-Id": owner_id})
+    circle_id = circle.json()["id"]
+
+    a = client.post(f"/circles/{circle_id}/persons", json={"full_name": "A"}, headers={"X-User-Id": owner_id}).json()["id"]
+    b = client.post(f"/circles/{circle_id}/persons", json={"full_name": "B"}, headers={"X-User-Id": owner_id}).json()["id"]
+
+    first = client.post(
+        f"/circles/{circle_id}/relationships",
+        json={"from_person_id": b, "to_person_id": a, "relationship_type": "spouse_of"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert first.status_code == 200
+    first_body = first.json()
+    assert first_body["from_person_id"] == min(a, b)
+    assert first_body["to_person_id"] == max(a, b)
+
+    second = client.post(
+        f"/circles/{circle_id}/relationships",
+        json={"from_person_id": a, "to_person_id": b, "relationship_type": "spouse_of"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert second.status_code == 409
+
+    # Inject legacy reverse duplicate directly to ensure delete cleans both rows.
+    with main.get_conn() as conn:
+        canonical_from = first_body["from_person_id"]
+        canonical_to = first_body["to_person_id"]
+        conn.execute(
+            """
+            INSERT INTO relationships (id, circle_id, from_person_id, to_person_id, relationship_type, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("legacy-reverse-id", circle_id, canonical_to, canonical_from, "spouse_of", main.utc_now()),
+        )
+
+    deleted = client.delete(
+        f"/circles/{circle_id}/relationships/{first_body['id']}",
+        headers={"X-User-Id": owner_id},
+    )
+    assert deleted.status_code == 200
+    rels = client.get(f"/circles/{circle_id}/relationships", headers={"X-User-Id": owner_id})
+    assert rels.status_code == 200
+    assert rels.json() == []
 
 
 def test_person_patch_updates_profile_and_revisions(tmp_path: Path) -> None:
