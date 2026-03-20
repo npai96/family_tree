@@ -693,7 +693,7 @@
         }
 
         async function loadCircles() {
-          if (!activeUserId) return setCircles([]);
+          if (!activeUserId && !authToken) return setCircles([]);
           const data = await requestJson("/circles", { headers });
           setCircles(data);
           if (!data.length) return setSelectedCircle("");
@@ -702,7 +702,7 @@
         }
 
         async function loadCircleData(circleId) {
-          if (!activeUserId || !circleId) {
+          if ((!activeUserId && !authToken) || !circleId) {
             setMembers([]); setPersons([]); setRelationships([]); setChangeRequests([]); setContextEvents([]); setTimeline([]);
             return;
           }
@@ -748,9 +748,9 @@
           setHighlightedNodeIds([]);
           setHighlightedEdgeKeys([]);
           loadCircles().catch((e) => setStatus(e.message));
-        }, [activeUserId]);
-        useEffect(() => { loadCircleData(selectedCircle).catch((e) => setStatus(e.message)); }, [activeUserId, selectedCircle]);
-        useEffect(() => { loadManagementData(selectedCircle).catch((e) => setStatus(e.message)); }, [activeUserId, selectedCircle]);
+        }, [activeUserId, authToken]);
+        useEffect(() => { loadCircleData(selectedCircle).catch((e) => setStatus(e.message)); }, [activeUserId, authToken, selectedCircle]);
+        useEffect(() => { loadManagementData(selectedCircle).catch((e) => setStatus(e.message)); }, [activeUserId, authToken, selectedCircle]);
         useEffect(() => { loadMyInvites().catch((e) => setStatus(e.message)); }, [activeUserId, authToken]);
         useEffect(() => {
           if (!subgraph) return;
@@ -792,6 +792,7 @@
 
         async function addMember(e) {
           e.preventDefault();
+          if (!canManageMembers) throw new Error("Only owners can manage members");
           await requestJson(`/circles/${selectedCircle}/members`, {
             method: "POST",
             headers,
@@ -804,6 +805,7 @@
 
         async function createInvitation(e) {
           e.preventDefault();
+          if (!canManageMembers) throw new Error("Only owners can send invitations");
           await requestJson(`/circles/${selectedCircle}/invitations`, {
             method: "POST",
             headers,
@@ -830,11 +832,18 @@
 
         async function transferOwnership(e) {
           e.preventDefault();
+          if (!canManageMembers) throw new Error("Only owners can transfer ownership");
+          const newOwnerUserId = e.target.new_owner_user_id.value;
           await requestJson(`/circles/${selectedCircle}/ownership/transfer`, {
             method: "POST",
             headers,
-            body: JSON.stringify({ new_owner_user_id: e.target.new_owner_user_id.value }),
+            body: JSON.stringify({ new_owner_user_id: newOwnerUserId }),
           });
+          setMembers((prev) => prev.map((m) => {
+            if (m.user_id === activeUserId) return { ...m, role: "viewer" };
+            if (m.user_id === newOwnerUserId) return { ...m, role: "owner" };
+            return m;
+          }));
           setStatus("Ownership transferred");
           await loadCircleData(selectedCircle);
           await loadManagementData(selectedCircle);

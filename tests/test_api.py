@@ -1065,7 +1065,7 @@ def test_invitation_transfer_and_audit_flow(tmp_path: Path) -> None:
     former_owner_members = client.get(f"/circles/{circle_id}/members", headers=viewer_headers)
     assert former_owner_members.status_code == 200
     role_by_user = {row["user_id"]: row["role"] for row in former_owner_members.json()}
-    assert role_by_user[owner_id] == "editor"
+    assert role_by_user[owner_id] == "viewer"
     assert role_by_user[viewer_id] == "owner"
 
     audit = client.get(f"/circles/{circle_id}/audit-logs", headers=viewer_headers)
@@ -1075,3 +1075,11 @@ def test_invitation_transfer_and_audit_flow(tmp_path: Path) -> None:
     assert "invitation.created" in actions
     assert "invitation.accepted" in actions
     assert "ownership.transferred" in actions
+
+    # Former owner should no longer be able to execute owner-only operations.
+    former_owner_add = client.post(
+        f"/circles/{circle_id}/members",
+        json={"user_id": owner_id, "role": "viewer"},
+        headers=owner_headers,
+    )
+    assert former_owner_add.status_code == 403

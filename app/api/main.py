@@ -1319,7 +1319,7 @@ def transfer_ownership(
                 (circle_id, payload.new_owner_user_id),
             )
         conn.execute(
-            "UPDATE circle_memberships SET role = 'editor' WHERE circle_id = ? AND user_id = ? AND role = 'owner'",
+            "UPDATE circle_memberships SET role = 'viewer' WHERE circle_id = ? AND user_id = ? AND role = 'owner'",
             (circle_id, actor_user_id),
         )
         row = conn.execute(
