@@ -12,6 +12,7 @@ import app.api.main as main
 def build_client(tmp_path: Path) -> TestClient:
     main.DB_PATH = tmp_path / "test.db"
     main.MEDIA_DIR = tmp_path / "media"
+    main.ALLOW_LEGACY_X_USER_ID = True
     main.init_db()
     return TestClient(main.app)
 
@@ -20,6 +21,13 @@ def create_user(client: TestClient, name: str) -> str:
     response = client.post("/users", json={"display_name": name})
     assert response.status_code == 200
     return response.json()["id"]
+
+
+def auth_headers_for(client: TestClient, user_id: str) -> dict[str, str]:
+    login = client.post("/auth/login", json={"user_id": user_id})
+    assert login.status_code == 200
+    token = login.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
 
 
 def test_health(tmp_path: Path) -> None:
@@ -982,3 +990,88 @@ def test_discussion_threads_messages_and_ws(tmp_path: Path) -> None:
     rows = listed.json()
     assert len(rows) == 1
     assert rows[0]["content"] == "Oral history note"
+
+
+def test_auth_hardening_rejects_legacy_header_when_disabled(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    owner_id = create_user(client, "Owner")
+    main.ALLOW_LEGACY_X_USER_ID = False
+    try:
+        denied = client.post("/circles", json={"name": "No Header Auth"}, headers={"X-User-Id": owner_id})
+        assert denied.status_code == 401
+
+        auth_headers = auth_headers_for(client, owner_id)
+        allowed = client.post("/circles", json={"name": "Bearer Only"}, headers=auth_headers)
+        assert allowed.status_code == 200
+    finally:
+        main.ALLOW_LEGACY_X_USER_ID = True
+
+
+def test_invitation_transfer_and_audit_flow(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    owner_id = create_user(client, "Owner")
+    editor_id = create_user(client, "Editor")
+    viewer_id = create_user(client, "Viewer")
+
+    owner_headers = auth_headers_for(client, owner_id)
+    editor_headers = auth_headers_for(client, editor_id)
+    viewer_headers = auth_headers_for(client, viewer_id)
+
+    circle = client.post("/circles", json={"name": "Invite Family"}, headers=owner_headers)
+    assert circle.status_code == 200
+    circle_id = circle.json()["id"]
+
+    invite = client.post(
+        f"/circles/{circle_id}/invitations",
+        json={"invited_user_id": editor_id, "role": "editor"},
+        headers=owner_headers,
+    )
+    assert invite.status_code == 200
+    invitation_id = invite.json()["id"]
+
+    my_invites = client.get("/invitations", headers=editor_headers)
+    assert my_invites.status_code == 200
+    assert any(row["id"] == invitation_id and row["status"] == "pending" for row in my_invites.json())
+
+    accepted = client.post(
+        f"/invitations/{invitation_id}/respond",
+        json={"action": "accept"},
+        headers=editor_headers,
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["status"] == "accepted"
+
+    members = client.get(f"/circles/{circle_id}/members", headers=owner_headers)
+    assert members.status_code == 200
+    role_by_user = {row["user_id"]: row["role"] for row in members.json()}
+    assert role_by_user[editor_id] == "editor"
+
+    add_viewer = client.post(
+        f"/circles/{circle_id}/members",
+        json={"user_id": viewer_id, "role": "viewer"},
+        headers=owner_headers,
+    )
+    assert add_viewer.status_code == 200
+
+    transfer = client.post(
+        f"/circles/{circle_id}/ownership/transfer",
+        json={"new_owner_user_id": viewer_id},
+        headers=owner_headers,
+    )
+    assert transfer.status_code == 200
+    assert transfer.json()["user_id"] == viewer_id
+    assert transfer.json()["role"] == "owner"
+
+    former_owner_members = client.get(f"/circles/{circle_id}/members", headers=viewer_headers)
+    assert former_owner_members.status_code == 200
+    role_by_user = {row["user_id"]: row["role"] for row in former_owner_members.json()}
+    assert role_by_user[owner_id] == "editor"
+    assert role_by_user[viewer_id] == "owner"
+
+    audit = client.get(f"/circles/{circle_id}/audit-logs", headers=viewer_headers)
+    assert audit.status_code == 200
+    actions = [row["action"] for row in audit.json()]
+    assert "circle.created" in actions
+    assert "invitation.created" in actions
+    assert "invitation.accepted" in actions
+    assert "ownership.transferred" in actions

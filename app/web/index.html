@@ -474,6 +474,9 @@
         const [changeRequests, setChangeRequests] = useState([]);
         const [contextEvents, setContextEvents] = useState([]);
         const [timeline, setTimeline] = useState([]);
+        const [circleInvitations, setCircleInvitations] = useState([]);
+        const [myInvitations, setMyInvitations] = useState([]);
+        const [auditLogs, setAuditLogs] = useState([]);
         const [timelineScope, setTimelineScope] = useState("person");
         const [timelineFromDate, setTimelineFromDate] = useState("");
         const [timelineToDate, setTimelineToDate] = useState("");
@@ -713,6 +716,29 @@
           setMembers(m); setPersons(p); setRelationships(r); setChangeRequests(cr); setContextEvents(ce);
         }
 
+        async function loadManagementData(circleId) {
+          if (!activeUserId || !circleId) {
+            setCircleInvitations([]);
+            setAuditLogs([]);
+            return;
+          }
+          const [invitesResult, auditResult] = await Promise.allSettled([
+            requestJson(`/circles/${circleId}/invitations`, { headers }),
+            requestJson(`/circles/${circleId}/audit-logs?limit=60`, { headers }),
+          ]);
+          setCircleInvitations(invitesResult.status === "fulfilled" ? invitesResult.value : []);
+          setAuditLogs(auditResult.status === "fulfilled" ? auditResult.value : []);
+        }
+
+        async function loadMyInvites() {
+          if (!activeUserId) {
+            setMyInvitations([]);
+            return;
+          }
+          const rows = await requestJson("/invitations?status=pending", { headers });
+          setMyInvitations(rows);
+        }
+
         useEffect(() => { loadUsers().catch((e) => setStatus(e.message)); }, []);
         useEffect(() => {
           setSelectedCircle("");
@@ -724,6 +750,8 @@
           loadCircles().catch((e) => setStatus(e.message));
         }, [activeUserId]);
         useEffect(() => { loadCircleData(selectedCircle).catch((e) => setStatus(e.message)); }, [activeUserId, selectedCircle]);
+        useEffect(() => { loadManagementData(selectedCircle).catch((e) => setStatus(e.message)); }, [activeUserId, selectedCircle]);
+        useEffect(() => { loadMyInvites().catch((e) => setStatus(e.message)); }, [activeUserId, authToken]);
         useEffect(() => {
           if (!subgraph) return;
           const next = computeLayout(subgraph, lastRoot);
@@ -771,6 +799,45 @@
           });
           setStatus("Member upserted");
           await loadCircleData(selectedCircle);
+          await loadManagementData(selectedCircle);
+        }
+
+        async function createInvitation(e) {
+          e.preventDefault();
+          await requestJson(`/circles/${selectedCircle}/invitations`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              invited_user_id: e.target.invited_user_id.value || null,
+              role: e.target.role.value,
+            }),
+          });
+          setStatus("Invitation sent");
+          await loadManagementData(selectedCircle);
+          await loadMyInvites();
+        }
+
+        async function respondInvitation(invitationId, action) {
+          await requestJson(`/invitations/${invitationId}/respond`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ action }),
+          });
+          setStatus(`Invitation ${action}ed`);
+          await loadMyInvites();
+          await loadCircles();
+        }
+
+        async function transferOwnership(e) {
+          e.preventDefault();
+          await requestJson(`/circles/${selectedCircle}/ownership/transfer`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ new_owner_user_id: e.target.new_owner_user_id.value }),
+          });
+          setStatus("Ownership transferred");
+          await loadCircleData(selectedCircle);
+          await loadManagementData(selectedCircle);
         }
 
         async function addPerson(e) {
@@ -1330,6 +1397,43 @@
                     })
                   ),
                 ]),
+                React.createElement("details", { className: "card", key: "inv" }, [
+                  React.createElement("summary", { key: "s" }, "Invitations & Ownership"),
+                  React.createElement("form", { key: "f", onSubmit: (e) => createInvitation(e).catch((x) => setStatus(x.message)) }, [
+                    React.createElement("select", { key: "u", name: "invited_user_id" },
+                      users.map((u) => React.createElement("option", { key: u.id, value: u.id }, `${u.display_name} (${u.id.slice(0, 8)})`))
+                    ),
+                    React.createElement("select", { key: "r", name: "role" }, [
+                      React.createElement("option", { key: "e", value: "editor" }, "editor"),
+                      React.createElement("option", { key: "v", value: "viewer" }, "viewer"),
+                    ]),
+                    React.createElement("button", { key: "b", type: "submit", disabled: !selectedCircle || !canManageMembers }, "Send Invite"),
+                  ]),
+                  React.createElement("form", { key: "xfer", onSubmit: (e) => transferOwnership(e).catch((x) => setStatus(x.message)) }, [
+                    React.createElement("select", { key: "n", name: "new_owner_user_id" },
+                      members.filter((m) => m.user_id !== activeUserId).map((m) => {
+                        const u = users.find((row) => row.id === m.user_id);
+                        const label = u ? `${u.display_name} (${u.id.slice(0, 8)})` : m.user_id.slice(0, 8);
+                        return React.createElement("option", { key: m.user_id, value: m.user_id }, label);
+                      })
+                    ),
+                    React.createElement("button", { key: "b", type: "submit", disabled: !selectedCircle || !canManageMembers || members.length < 2 }, "Transfer Ownership"),
+                  ]),
+                  React.createElement("div", { className: "muted", key: "myh" }, "My Pending Invitations"),
+                  React.createElement("div", { className: "list", key: "my" },
+                    myInvitations.map((inv) => React.createElement("div", { className: "item", key: inv.id }, [
+                      React.createElement("div", { key: "d" }, `Circle ${inv.circle_id.slice(0, 8)} • ${inv.role}`),
+                      React.createElement("div", { key: "a", style: { display: "flex", gap: "6px", marginTop: "4px" } }, [
+                        React.createElement("button", { key: "ac", type: "button", className: "btn", onClick: () => respondInvitation(inv.id, "accept").catch((x) => setStatus(x.message)) }, "Accept"),
+                        React.createElement("button", { key: "dc", type: "button", className: "ghost", onClick: () => respondInvitation(inv.id, "decline").catch((x) => setStatus(x.message)) }, "Decline"),
+                      ]),
+                    ]))
+                  ),
+                  React.createElement("div", { className: "muted", key: "ch" }, "Circle Invitations"),
+                  React.createElement("div", { className: "list", key: "cl" },
+                    circleInvitations.map((inv) => React.createElement("div", { className: "item", key: inv.id }, `${inv.invited_user_id.slice(0, 8)} • ${inv.role} • ${inv.status}`))
+                  ),
+                ]),
                 React.createElement("details", { className: "card", key: "p" }, [
                   React.createElement("summary", { key: "s" }, "People & Relationships"),
                   React.createElement("form", { key: "f1", onSubmit: (e) => addPerson(e).catch((x) => setStatus(x.message)) }, [
@@ -1790,6 +1894,15 @@
                         `${t.date} • ${t.title}`
                       ]
                     ))
+                  ),
+                ]),
+                React.createElement("details", { className: "card", key: "audit" }, [
+                  React.createElement("summary", { key: "s" }, "Audit Logs"),
+                  React.createElement("div", { className: "list", key: "l" },
+                    auditLogs.map((a) => React.createElement("div", { className: "item", key: a.id }, [
+                      React.createElement("div", { key: "x" }, `${a.action} • ${a.entity_type}`),
+                      React.createElement("div", { className: "muted", key: "t" }, `${(a.actor_user_id || "").slice(0, 8)} • ${a.created_at.slice(0, 19).replace("T", " ")}`),
+                    ]))
                   ),
                 ]),
               ]) : null

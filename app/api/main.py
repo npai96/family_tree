@@ -4,6 +4,7 @@ import sqlite3
 import json
 import shutil
 import secrets
+import os
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 DB_PATH = BASE_DIR / "app" / "api" / "mvp.db"
 WEB_INDEX_PATH = BASE_DIR / "app" / "web" / "index.html"
 MEDIA_DIR = BASE_DIR / "app" / "media"
+ALLOW_LEGACY_X_USER_ID = os.getenv("ALLOW_LEGACY_X_USER_ID", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def utc_now() -> str:
@@ -220,6 +222,34 @@ def init_db() -> None:
               revoked_at TEXT,
               FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS circle_invitations (
+              id TEXT PRIMARY KEY,
+              circle_id TEXT NOT NULL,
+              invited_user_id TEXT NOT NULL,
+              role TEXT NOT NULL CHECK (role IN ('editor', 'viewer')),
+              status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'declined', 'cancelled')),
+              invited_by TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              responded_at TEXT,
+              UNIQUE (circle_id, invited_user_id, status),
+              FOREIGN KEY (circle_id) REFERENCES circles(id) ON DELETE CASCADE,
+              FOREIGN KEY (invited_user_id) REFERENCES users(id) ON DELETE CASCADE,
+              FOREIGN KEY (invited_by) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS audit_logs (
+              id TEXT PRIMARY KEY,
+              circle_id TEXT NOT NULL,
+              actor_user_id TEXT NOT NULL,
+              action TEXT NOT NULL,
+              entity_type TEXT NOT NULL,
+              entity_id TEXT,
+              payload_json TEXT,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY (circle_id) REFERENCES circles(id) ON DELETE CASCADE,
+              FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
             """
         )
 
@@ -282,6 +312,42 @@ class CircleMembershipOut(BaseModel):
 class CircleMembershipCreate(BaseModel):
     user_id: str
     role: Literal["editor", "viewer"]
+
+
+class OwnershipTransferRequest(BaseModel):
+    new_owner_user_id: str
+
+
+class CircleInvitationCreate(BaseModel):
+    invited_user_id: Optional[str] = None
+    invited_display_name: Optional[str] = None
+    role: Literal["editor", "viewer"]
+
+
+class CircleInvitationOut(BaseModel):
+    id: str
+    circle_id: str
+    invited_user_id: str
+    role: Literal["editor", "viewer"]
+    status: Literal["pending", "accepted", "declined", "cancelled"]
+    invited_by: str
+    created_at: str
+    responded_at: Optional[str] = None
+
+
+class InvitationRespond(BaseModel):
+    action: Literal["accept", "decline"]
+
+
+class AuditLogOut(BaseModel):
+    id: str
+    circle_id: str
+    actor_user_id: str
+    action: str
+    entity_type: str
+    entity_id: Optional[str] = None
+    payload_json: Optional[str] = None
+    created_at: str
 
 
 class PersonCreate(BaseModel):
@@ -592,13 +658,40 @@ def _require_authenticated_user(
     x_user_id: Optional[str],
     authorization: Optional[str],
 ) -> str:
-    if x_user_id:
-        return _require_user(conn, x_user_id)
     token = _extract_bearer_token(authorization)
     user_id = _user_id_from_session_token(conn, token)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Missing or invalid auth token")
-    return _require_user(conn, user_id)
+    if user_id:
+        return _require_user(conn, user_id)
+    if ALLOW_LEGACY_X_USER_ID and x_user_id:
+        return _require_user(conn, x_user_id)
+    raise HTTPException(status_code=401, detail="Missing or invalid auth token")
+
+
+def _log_audit(
+    conn: sqlite3.Connection,
+    circle_id: str,
+    actor_user_id: str,
+    action: str,
+    entity_type: str,
+    entity_id: Optional[str] = None,
+    payload: Optional[dict[str, Any]] = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO audit_logs (id, circle_id, actor_user_id, action, entity_type, entity_id, payload_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(uuid4()),
+            circle_id,
+            actor_user_id,
+            action,
+            entity_type,
+            entity_id,
+            json.dumps(payload) if payload is not None else None,
+            utc_now(),
+        ),
+    )
 
 
 def _get_role(conn: sqlite3.Connection, circle_id: str, user_id: str) -> str:
@@ -956,7 +1049,9 @@ async def circle_ws(
 ) -> None:
     with get_conn() as conn:
         token_user_id = _user_id_from_session_token(conn, token)
-        resolved_user_id = user_id or token_user_id
+        resolved_user_id = token_user_id
+        if not resolved_user_id and ALLOW_LEGACY_X_USER_ID:
+            resolved_user_id = user_id
         if not resolved_user_id:
             await websocket.close(code=1008)
             return
@@ -1080,6 +1175,15 @@ def create_circle(
             "INSERT INTO circle_memberships (circle_id, user_id, role, created_at) VALUES (?, ?, 'owner', ?)",
             (circle_id, actor_user_id, now),
         )
+        _log_audit(
+            conn,
+            circle_id=circle_id,
+            actor_user_id=actor_user_id,
+            action="circle.created",
+            entity_type="circle",
+            entity_id=circle_id,
+            payload={"name": payload.name.strip()},
+        )
     return CircleOut(id=circle_id, name=payload.name.strip(), created_at=now)
 
 
@@ -1159,13 +1263,269 @@ def add_member(
                     """,
                     (circle_id, payload.user_id),
                 ).fetchone()
+                _log_audit(
+                    conn,
+                    circle_id=circle_id,
+                    actor_user_id=actor_user_id,
+                    action="membership.updated",
+                    entity_type="membership",
+                    entity_id=f"{circle_id}:{payload.user_id}",
+                    payload={"role": payload.role},
+                )
             return CircleMembershipOut(**dict(existing))
 
         conn.execute(
             "INSERT INTO circle_memberships (circle_id, user_id, role, created_at) VALUES (?, ?, ?, ?)",
             (circle_id, payload.user_id, payload.role, now),
         )
+        _log_audit(
+            conn,
+            circle_id=circle_id,
+            actor_user_id=actor_user_id,
+            action="membership.created",
+            entity_type="membership",
+            entity_id=f"{circle_id}:{payload.user_id}",
+            payload={"role": payload.role},
+        )
     return CircleMembershipOut(circle_id=circle_id, user_id=payload.user_id, role=payload.role, created_at=now)
+
+
+@app.post("/circles/{circle_id}/ownership/transfer", response_model=CircleMembershipOut)
+def transfer_ownership(
+    circle_id: str,
+    payload: OwnershipTransferRequest,
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> CircleMembershipOut:
+    with get_conn() as conn:
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
+        _require_circle_role(conn, circle_id, actor_user_id, {"owner"})
+        _require_user(conn, payload.new_owner_user_id)
+        if payload.new_owner_user_id == actor_user_id:
+            raise HTTPException(status_code=400, detail="New owner must be different from current owner")
+
+        target_member = conn.execute(
+            "SELECT circle_id, user_id, role, created_at FROM circle_memberships WHERE circle_id = ? AND user_id = ?",
+            (circle_id, payload.new_owner_user_id),
+        ).fetchone()
+        if not target_member:
+            conn.execute(
+                "INSERT INTO circle_memberships (circle_id, user_id, role, created_at) VALUES (?, ?, 'owner', ?)",
+                (circle_id, payload.new_owner_user_id, utc_now()),
+            )
+        else:
+            conn.execute(
+                "UPDATE circle_memberships SET role = 'owner' WHERE circle_id = ? AND user_id = ?",
+                (circle_id, payload.new_owner_user_id),
+            )
+        conn.execute(
+            "UPDATE circle_memberships SET role = 'editor' WHERE circle_id = ? AND user_id = ? AND role = 'owner'",
+            (circle_id, actor_user_id),
+        )
+        row = conn.execute(
+            "SELECT circle_id, user_id, role, created_at FROM circle_memberships WHERE circle_id = ? AND user_id = ?",
+            (circle_id, payload.new_owner_user_id),
+        ).fetchone()
+        _log_audit(
+            conn,
+            circle_id=circle_id,
+            actor_user_id=actor_user_id,
+            action="ownership.transferred",
+            entity_type="membership",
+            entity_id=f"{circle_id}:{payload.new_owner_user_id}",
+            payload={"from_user_id": actor_user_id, "to_user_id": payload.new_owner_user_id},
+        )
+    return CircleMembershipOut(**dict(row))
+
+
+@app.post("/circles/{circle_id}/invitations", response_model=CircleInvitationOut)
+def create_invitation(
+    circle_id: str,
+    payload: CircleInvitationCreate,
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> CircleInvitationOut:
+    invitation_id = str(uuid4())
+    now = utc_now()
+    with get_conn() as conn:
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
+        _require_circle_role(conn, circle_id, actor_user_id, {"owner"})
+
+        invited_user_id = payload.invited_user_id
+        if not invited_user_id and payload.invited_display_name and payload.invited_display_name.strip():
+            row = conn.execute(
+                "SELECT id FROM users WHERE lower(display_name) = lower(?) ORDER BY created_at ASC LIMIT 1",
+                (payload.invited_display_name.strip(),),
+            ).fetchone()
+            if row:
+                invited_user_id = row["id"]
+        if not invited_user_id:
+            raise HTTPException(status_code=400, detail="Provide invited_user_id or a resolvable invited_display_name")
+        _require_user(conn, invited_user_id)
+        if invited_user_id == actor_user_id:
+            raise HTTPException(status_code=400, detail="Cannot invite yourself")
+
+        existing = conn.execute(
+            """
+            SELECT id FROM circle_invitations
+            WHERE circle_id = ? AND invited_user_id = ? AND status = 'pending'
+            """,
+            (circle_id, invited_user_id),
+        ).fetchone()
+        if existing:
+            raise HTTPException(status_code=409, detail="Pending invitation already exists for this user")
+
+        conn.execute(
+            """
+            INSERT INTO circle_invitations (
+              id, circle_id, invited_user_id, role, status, invited_by, created_at, responded_at
+            ) VALUES (?, ?, ?, ?, 'pending', ?, ?, NULL)
+            """,
+            (invitation_id, circle_id, invited_user_id, payload.role, actor_user_id, now),
+        )
+        row = conn.execute("SELECT * FROM circle_invitations WHERE id = ?", (invitation_id,)).fetchone()
+        _log_audit(
+            conn,
+            circle_id=circle_id,
+            actor_user_id=actor_user_id,
+            action="invitation.created",
+            entity_type="invitation",
+            entity_id=invitation_id,
+            payload={"invited_user_id": invited_user_id, "role": payload.role},
+        )
+    return CircleInvitationOut(**dict(row))
+
+
+@app.get("/circles/{circle_id}/invitations", response_model=list[CircleInvitationOut])
+def list_circle_invitations(
+    circle_id: str,
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> list[CircleInvitationOut]:
+    with get_conn() as conn:
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
+        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM circle_invitations
+            WHERE circle_id = ?
+            ORDER BY created_at DESC
+            """,
+            (circle_id,),
+        ).fetchall()
+    return [CircleInvitationOut(**dict(row)) for row in rows]
+
+
+@app.get("/invitations", response_model=list[CircleInvitationOut])
+def list_my_invitations(
+    status: Optional[Literal["pending", "accepted", "declined", "cancelled"]] = Query(default=None),
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> list[CircleInvitationOut]:
+    with get_conn() as conn:
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
+        if status:
+            rows = conn.execute(
+                "SELECT * FROM circle_invitations WHERE invited_user_id = ? AND status = ? ORDER BY created_at DESC",
+                (actor_user_id, status),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM circle_invitations WHERE invited_user_id = ? ORDER BY created_at DESC",
+                (actor_user_id,),
+            ).fetchall()
+    return [CircleInvitationOut(**dict(row)) for row in rows]
+
+
+@app.post("/invitations/{invitation_id}/respond", response_model=CircleInvitationOut)
+def respond_invitation(
+    invitation_id: str,
+    payload: InvitationRespond,
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> CircleInvitationOut:
+    responded_at = utc_now()
+    with get_conn() as conn:
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
+        row = conn.execute(
+            "SELECT * FROM circle_invitations WHERE id = ?",
+            (invitation_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Invitation not found")
+        if row["invited_user_id"] != actor_user_id:
+            raise HTTPException(status_code=403, detail="Not allowed to respond to this invitation")
+        if row["status"] != "pending":
+            raise HTTPException(status_code=409, detail="Invitation already responded")
+
+        new_status = "accepted" if payload.action == "accept" else "declined"
+        conn.execute(
+            "UPDATE circle_invitations SET status = ?, responded_at = ? WHERE id = ?",
+            (new_status, responded_at, invitation_id),
+        )
+        if new_status == "accepted":
+            member = conn.execute(
+                "SELECT role FROM circle_memberships WHERE circle_id = ? AND user_id = ?",
+                (row["circle_id"], actor_user_id),
+            ).fetchone()
+            if not member:
+                conn.execute(
+                    """
+                    INSERT INTO circle_memberships (circle_id, user_id, role, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (row["circle_id"], actor_user_id, row["role"], responded_at),
+                )
+            elif member["role"] != "owner":
+                conn.execute(
+                    "UPDATE circle_memberships SET role = ? WHERE circle_id = ? AND user_id = ?",
+                    (row["role"], row["circle_id"], actor_user_id),
+                )
+            _log_audit(
+                conn,
+                circle_id=row["circle_id"],
+                actor_user_id=actor_user_id,
+                action="invitation.accepted",
+                entity_type="invitation",
+                entity_id=invitation_id,
+                payload={"role": row["role"]},
+            )
+        else:
+            _log_audit(
+                conn,
+                circle_id=row["circle_id"],
+                actor_user_id=actor_user_id,
+                action="invitation.declined",
+                entity_type="invitation",
+                entity_id=invitation_id,
+                payload=None,
+            )
+        out = conn.execute("SELECT * FROM circle_invitations WHERE id = ?", (invitation_id,)).fetchone()
+    return CircleInvitationOut(**dict(out))
+
+
+@app.get("/circles/{circle_id}/audit-logs", response_model=list[AuditLogOut])
+def list_audit_logs(
+    circle_id: str,
+    limit: int = Query(100, ge=1, le=500),
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> list[AuditLogOut]:
+    with get_conn() as conn:
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
+        _get_role(conn, circle_id, actor_user_id)
+        rows = conn.execute(
+            """
+            SELECT id, circle_id, actor_user_id, action, entity_type, entity_id, payload_json, created_at
+            FROM audit_logs
+            WHERE circle_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (circle_id, limit),
+        ).fetchall()
+    return [AuditLogOut(**dict(row)) for row in rows]
 
 
 @app.post("/circles/{circle_id}/persons", response_model=PersonOut)
@@ -1218,6 +1578,15 @@ def create_person(
         )
         _insert_person_revision(conn, circle_id, person_id, actor_user_id, "person_created")
         row = conn.execute("SELECT * FROM persons WHERE id = ?", (person_id,)).fetchone()
+        _log_audit(
+            conn,
+            circle_id=circle_id,
+            actor_user_id=actor_user_id,
+            action="person.created",
+            entity_type="person",
+            entity_id=person_id,
+            payload={"full_name": normalized_name},
+        )
     return PersonOut(**dict(row))
 
 
@@ -1297,6 +1666,15 @@ def update_person(
             person_id,
             actor_user_id,
             revision_reason or "person_updated",
+        )
+        _log_audit(
+            conn,
+            circle_id=circle_id,
+            actor_user_id=actor_user_id,
+            action="person.updated",
+            entity_type="person",
+            entity_id=person_id,
+            payload=patch,
         )
         row = conn.execute("SELECT * FROM persons WHERE id = ? AND circle_id = ?", (person_id, circle_id)).fetchone()
     return PersonOut(**dict(row))
@@ -1641,6 +2019,15 @@ def create_relationship(
         except sqlite3.IntegrityError as err:
             raise HTTPException(status_code=409, detail=str(err)) from err
         row = conn.execute("SELECT * FROM relationships WHERE id = ?", (rel_id,)).fetchone()
+        _log_audit(
+            conn,
+            circle_id=circle_id,
+            actor_user_id=actor_user_id,
+            action="relationship.created",
+            entity_type="relationship",
+            entity_id=rel_id,
+            payload={"from_person_id": from_person_id, "to_person_id": to_person_id, "relationship_type": normalized_type},
+        )
     return RelationshipOut(**dict(row))
 
 
@@ -1724,6 +2111,15 @@ def update_relationship(
         except sqlite3.IntegrityError as err:
             raise HTTPException(status_code=409, detail=str(err)) from err
         row = conn.execute("SELECT * FROM relationships WHERE id = ?", (relationship_id,)).fetchone()
+        _log_audit(
+            conn,
+            circle_id=circle_id,
+            actor_user_id=actor_user_id,
+            action="relationship.updated",
+            entity_type="relationship",
+            entity_id=relationship_id,
+            payload={"from_person_id": next_from, "to_person_id": next_to, "relationship_type": next_type},
+        )
     return RelationshipOut(**dict(row))
 
 
@@ -1768,6 +2164,19 @@ def delete_relationship(
                 "DELETE FROM relationships WHERE id = ? AND circle_id = ?",
                 (relationship_id, circle_id),
             )
+        _log_audit(
+            conn,
+            circle_id=circle_id,
+            actor_user_id=actor_user_id,
+            action="relationship.deleted",
+            entity_type="relationship",
+            entity_id=relationship_id,
+            payload={
+                "from_person_id": row["from_person_id"],
+                "to_person_id": row["to_person_id"],
+                "relationship_type": row["relationship_type"],
+            },
+        )
     return {"status": "deleted", "relationship_id": relationship_id}
 
 
