@@ -910,6 +910,28 @@ def _traverse(root_person_id: str, adjacency: dict[str, list[Edge]], max_depth: 
     return seen, seen_edges
 
 
+def _compute_subgraph(
+    circle_id: str,
+    root_person_id: str,
+    direction: Literal["ancestors", "descendants"],
+    depth: int,
+    mode: Literal["lineage", "family_expanded"],
+    lateral_types: Optional[str],
+    lateral_depth: int,
+) -> tuple[set[str], dict[str, Edge]]:
+    adjacency = _load_edges(circle_id, direction)
+    seen_person_ids, seen_edges = _traverse(root_person_id, adjacency, depth)
+    if mode == "family_expanded":
+        seen_person_ids, seen_edges = _expand_lateral_edges(
+            circle_id=circle_id,
+            base_person_ids=seen_person_ids,
+            existing_edges=seen_edges,
+            allowed_relationship_types=_parse_lateral_relationship_types(lateral_types),
+            lateral_depth=lateral_depth,
+        )
+    return seen_person_ids, seen_edges
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -2004,16 +2026,15 @@ def get_subgraph(
         if not root_exists:
             raise HTTPException(status_code=404, detail="Root person not found in circle")
 
-    adjacency = _load_edges(circle_id, direction)
-    seen_person_ids, seen_edges = _traverse(root_person_id, adjacency, depth)
-    if mode == "family_expanded":
-        seen_person_ids, seen_edges = _expand_lateral_edges(
-            circle_id=circle_id,
-            base_person_ids=seen_person_ids,
-            existing_edges=seen_edges,
-            allowed_relationship_types=_parse_lateral_relationship_types(lateral_types),
-            lateral_depth=lateral_depth,
-        )
+    seen_person_ids, seen_edges = _compute_subgraph(
+        circle_id=circle_id,
+        root_person_id=root_person_id,
+        direction=direction,
+        depth=depth,
+        mode=mode,
+        lateral_types=lateral_types,
+        lateral_depth=lateral_depth,
+    )
 
     with get_conn() as conn:
         placeholders = ",".join("?" for _ in seen_person_ids)
@@ -2035,6 +2056,229 @@ def get_subgraph(
         for edge in seen_edges.values()
     ]
     return SubgraphOut(persons=persons, relationships=rels)
+
+
+@app.get("/circles/{circle_id}/graph/subgraph/timeline", response_model=list[TimelineItem])
+def get_subgraph_timeline(
+    circle_id: str,
+    root_person_id: str = Query(...),
+    direction: Literal["ancestors", "descendants"] = Query(...),
+    depth: int = Query(2, ge=1, le=10),
+    mode: Literal["lineage", "family_expanded"] = Query("lineage"),
+    lateral_types: Optional[str] = Query(default="spouse_of,sibling_of,cousin_of"),
+    lateral_depth: int = Query(1, ge=0, le=4),
+    from_date: Optional[str] = Query(default=None),
+    to_date: Optional[str] = Query(default=None),
+    event_types: Optional[str] = Query(default=None),
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> list[TimelineItem]:
+    with get_conn() as conn:
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
+        _get_role(conn, circle_id, actor_user_id)
+        root_exists = conn.execute(
+            "SELECT id FROM persons WHERE id = ? AND circle_id = ?",
+            (root_person_id, circle_id),
+        ).fetchone()
+        if not root_exists:
+            raise HTTPException(status_code=404, detail="Root person not found in circle")
+
+    person_ids, _ = _compute_subgraph(
+        circle_id=circle_id,
+        root_person_id=root_person_id,
+        direction=direction,
+        depth=depth,
+        mode=mode,
+        lateral_types=lateral_types,
+        lateral_depth=lateral_depth,
+    )
+    if not person_ids:
+        return []
+
+    event_type_filter: set[str] = set()
+    if event_types:
+        for value in event_types.split(","):
+            trimmed = value.strip().lower()
+            if trimmed in {"world", "political", "social", "technology", "family"}:
+                event_type_filter.add(trimmed)
+
+    timeline: list[TimelineItem] = []
+    with get_conn() as conn:
+        person_placeholders = ",".join("?" for _ in person_ids)
+        person_rows = conn.execute(
+            f"SELECT * FROM persons WHERE circle_id = ? AND id IN ({person_placeholders})",
+            (circle_id, *person_ids),
+        ).fetchall()
+        person_map = {row["id"]: row for row in person_rows}
+
+        for row in person_rows:
+            if row["birth_date"]:
+                timeline.append(
+                    TimelineItem(
+                        date=row["birth_date"],
+                        kind="life",
+                        title=f"Birth of {row['full_name']}",
+                        detail=row["birth_place"] or None,
+                        ref_id=row["id"],
+                    )
+                )
+            if row["death_date"]:
+                timeline.append(
+                    TimelineItem(
+                        date=row["death_date"],
+                        kind="life",
+                        title=f"Death of {row['full_name']}",
+                        detail=None,
+                        ref_id=row["id"],
+                    )
+                )
+
+        place_rows = conn.execute(
+            f"""
+            SELECT *
+            FROM person_places
+            WHERE circle_id = ? AND person_id IN ({person_placeholders}) AND from_date IS NOT NULL
+            ORDER BY from_date ASC, created_at ASC
+            """,
+            (circle_id, *person_ids),
+        ).fetchall()
+        for row in place_rows:
+            person = person_map.get(row["person_id"])
+            if not person:
+                continue
+            timeline.append(
+                TimelineItem(
+                    date=row["from_date"],
+                    kind="life",
+                    title=f"{person['full_name']} moved to {row['place_name']}",
+                    detail=row["country"],
+                    ref_id=row["person_id"],
+                )
+            )
+
+        context_rows = conn.execute(
+            f"""
+            SELECT DISTINCT ce.*
+            FROM context_events ce
+            INNER JOIN person_context_links pcl ON pcl.context_event_id = ce.id
+            WHERE ce.circle_id = ? AND pcl.person_id IN ({person_placeholders})
+            ORDER BY ce.date ASC, ce.created_at ASC
+            """,
+            (circle_id, *person_ids),
+        ).fetchall()
+        for row in context_rows:
+            if event_type_filter and row["event_type"] not in event_type_filter:
+                continue
+            timeline.append(
+                TimelineItem(
+                    date=row["date"],
+                    kind="context",
+                    title=row["title"],
+                    detail=row["description"],
+                    ref_id=row["id"],
+                )
+            )
+
+    filtered = []
+    for item in timeline:
+        if from_date and item.date < from_date:
+            continue
+        if to_date and item.date > to_date:
+            continue
+        filtered.append(item)
+    filtered.sort(key=lambda x: x.date)
+    return filtered
+
+
+@app.get("/circles/{circle_id}/graph/subgraph/migration-geojson")
+def get_subgraph_migration_geojson(
+    circle_id: str,
+    root_person_id: str = Query(...),
+    direction: Literal["ancestors", "descendants"] = Query(...),
+    depth: int = Query(2, ge=1, le=10),
+    mode: Literal["lineage", "family_expanded"] = Query("lineage"),
+    lateral_types: Optional[str] = Query(default="spouse_of,sibling_of,cousin_of"),
+    lateral_depth: int = Query(1, ge=0, le=4),
+    up_to_date: Optional[str] = Query(default=None),
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
+        _get_role(conn, circle_id, actor_user_id)
+        root_exists = conn.execute(
+            "SELECT id FROM persons WHERE id = ? AND circle_id = ?",
+            (root_person_id, circle_id),
+        ).fetchone()
+        if not root_exists:
+            raise HTTPException(status_code=404, detail="Root person not found in circle")
+
+    person_ids, _ = _compute_subgraph(
+        circle_id=circle_id,
+        root_person_id=root_person_id,
+        direction=direction,
+        depth=depth,
+        mode=mode,
+        lateral_types=lateral_types,
+        lateral_depth=lateral_depth,
+    )
+    if not person_ids:
+        return {"type": "FeatureCollection", "features": []}
+
+    with get_conn() as conn:
+        person_placeholders = ",".join("?" for _ in person_ids)
+        person_rows = conn.execute(
+            f"SELECT id, full_name FROM persons WHERE circle_id = ? AND id IN ({person_placeholders})",
+            (circle_id, *person_ids),
+        ).fetchall()
+        name_by_person = {row["id"]: row["full_name"] for row in person_rows}
+        place_rows = conn.execute(
+            f"""
+            SELECT *
+            FROM person_places
+            WHERE circle_id = ? AND person_id IN ({person_placeholders}) AND lat IS NOT NULL AND lng IS NOT NULL
+            ORDER BY person_id ASC, COALESCE(from_date, created_at) ASC, created_at ASC
+            """,
+            (circle_id, *person_ids),
+        ).fetchall()
+
+    grouped: dict[str, list[sqlite3.Row]] = {}
+    for row in place_rows:
+        if up_to_date and row["from_date"] and row["from_date"] > up_to_date:
+            continue
+        grouped.setdefault(row["person_id"], []).append(row)
+
+    features: list[dict[str, Any]] = []
+    for person_id, rows in grouped.items():
+        coords = [[float(r["lng"]), float(r["lat"])] for r in rows]
+        if len(coords) >= 2:
+            features.append(
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "LineString", "coordinates": coords},
+                    "properties": {
+                        "person_id": person_id,
+                        "full_name": name_by_person.get(person_id, person_id[:8]),
+                    },
+                }
+            )
+        for r in rows:
+            features.append(
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [float(r["lng"]), float(r["lat"])]},
+                    "properties": {
+                        "person_id": person_id,
+                        "full_name": name_by_person.get(person_id, person_id[:8]),
+                        "place_name": r["place_name"],
+                        "country": r["country"],
+                        "from_date": r["from_date"],
+                        "to_date": r["to_date"],
+                        "notes": r["notes"],
+                    },
+                }
+            )
+    return {"type": "FeatureCollection", "features": features}
 
 
 @app.post("/circles/{circle_id}/threads", response_model=DiscussionThreadOut)

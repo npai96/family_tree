@@ -474,10 +474,18 @@
         const [changeRequests, setChangeRequests] = useState([]);
         const [contextEvents, setContextEvents] = useState([]);
         const [timeline, setTimeline] = useState([]);
+        const [timelineScope, setTimelineScope] = useState("person");
+        const [timelineFromDate, setTimelineFromDate] = useState("");
+        const [timelineToDate, setTimelineToDate] = useState("");
+        const [timelineEventTypes, setTimelineEventTypes] = useState("");
         const [personMedia, setPersonMedia] = useState([]);
         const [personPlaces, setPersonPlaces] = useState([]);
         const [selectedPlace, setSelectedPlace] = useState(null);
         const [migrationGeoJson, setMigrationGeoJson] = useState(null);
+        const [subgraphMigrationGeoJson, setSubgraphMigrationGeoJson] = useState(null);
+        const [subgraphMigrationDates, setSubgraphMigrationDates] = useState([]);
+        const [subgraphMigrationIndex, setSubgraphMigrationIndex] = useState(0);
+        const [isSubgraphMigrationPlaying, setIsSubgraphMigrationPlaying] = useState(false);
         const [discussionThreadId, setDiscussionThreadId] = useState("");
         const [discussionMessages, setDiscussionMessages] = useState([]);
         const [personRevisions, setPersonRevisions] = useState([]);
@@ -504,6 +512,7 @@
           relationship_type: "parent_of",
         });
         const graphViewportRef = useRef(null);
+        const migrationTimerRef = useRef(null);
 
         const headers = useMemo(() => {
           if (authToken) return { "Content-Type": "application/json", Authorization: `Bearer ${authToken}` };
@@ -530,6 +539,59 @@
         );
         const highlightedNodeSet = useMemo(() => new Set(highlightedNodeIds), [highlightedNodeIds]);
         const highlightedEdgeSet = useMemo(() => new Set(highlightedEdgeKeys), [highlightedEdgeKeys]);
+        const subgraphMigrationView = useMemo(() => {
+          const features = (subgraphMigrationGeoJson && subgraphMigrationGeoJson.features) || [];
+          const points = features.filter((f) => f.geometry && f.geometry.type === "Point");
+          const lines = features.filter((f) => f.geometry && f.geometry.type === "LineString");
+          if (!points.length && !lines.length) {
+            return { points: [], lines: [], width: 560, height: 240 };
+          }
+          const allCoords = [];
+          points.forEach((f) => {
+            if (Array.isArray(f.geometry.coordinates)) allCoords.push(f.geometry.coordinates);
+          });
+          lines.forEach((f) => {
+            if (Array.isArray(f.geometry.coordinates)) {
+              f.geometry.coordinates.forEach((c) => allCoords.push(c));
+            }
+          });
+          const lngs = allCoords.map((c) => Number(c[0]));
+          const lats = allCoords.map((c) => Number(c[1]));
+          const minLng = Math.min(...lngs);
+          const maxLng = Math.max(...lngs);
+          const minLat = Math.min(...lats);
+          const maxLat = Math.max(...lats);
+          const width = 560;
+          const height = 240;
+          const pad = 20;
+          const spanLng = Math.max(0.0001, maxLng - minLng);
+          const spanLat = Math.max(0.0001, maxLat - minLat);
+          function project(coord) {
+            const x = pad + ((Number(coord[0]) - minLng) / spanLng) * (width - pad * 2);
+            const y = pad + (1 - ((Number(coord[1]) - minLat) / spanLat)) * (height - pad * 2);
+            return [x, y];
+          }
+          const projectedPoints = points.map((f, i) => {
+            const [x, y] = project(f.geometry.coordinates);
+            return {
+              key: `p-${i}`,
+              x,
+              y,
+              label: (f.properties && (f.properties.place_name || f.properties.full_name)) || "Place",
+              fromDate: (f.properties && f.properties.from_date) || "",
+              personName: (f.properties && f.properties.full_name) || "",
+            };
+          });
+          const projectedLines = lines.map((f, i) => {
+            const coords = (f.geometry.coordinates || []).map(project);
+            return {
+              key: `l-${i}`,
+              d: coords.length ? `M ${coords.map((c) => `${c[0]} ${c[1]}`).join(" L ")}` : "",
+              label: (f.properties && f.properties.full_name) || "Route",
+            };
+          }).filter((l) => l.d);
+          return { points: projectedPoints, lines: projectedLines, width, height };
+        }, [subgraphMigrationGeoJson]);
 
         function setActiveUser(id) {
           if (id !== activeUserId && authToken) {
@@ -787,6 +849,10 @@
           }
         }
 
+        function buildSubgraphQuery() {
+          return `root_person_id=${encodeURIComponent(lastRoot)}&direction=${encodeURIComponent(lastDirection)}&depth=${Number(lastDepth)}&mode=${encodeURIComponent(lastMode)}&lateral_types=${encodeURIComponent(lastLateralTypes)}&lateral_depth=${Number(lastLateralDepth || 0)}`;
+        }
+
         async function deleteRelationship(relationshipId, circleId) {
           const targetCircleId = circleId || selectedCircle;
           if (!targetCircleId) {
@@ -949,7 +1015,18 @@
 
         async function loadTimeline(e) {
           e.preventDefault();
-          const data = await requestJson(`/circles/${selectedCircle}/persons/${e.target.person_id.value}/timeline`, { headers });
+          let data = [];
+          if (timelineScope === "person") {
+            data = await requestJson(`/circles/${selectedCircle}/persons/${e.target.person_id.value}/timeline`, { headers });
+          } else {
+            if (!lastRoot) {
+              setStatus("Render a graph first to load subgraph timeline");
+              return;
+            }
+            const query = buildSubgraphQuery();
+            const filters = `&from_date=${encodeURIComponent(timelineFromDate || "")}&to_date=${encodeURIComponent(timelineToDate || "")}&event_types=${encodeURIComponent(timelineEventTypes || "")}`;
+            data = await requestJson(`/circles/${selectedCircle}/graph/subgraph/timeline?${query}${filters}`, { headers });
+          }
           setTimeline(data);
           setStatus(`Loaded timeline with ${data.length} items`);
         }
@@ -1067,6 +1144,35 @@
           setStatus(`Loaded migration GeoJSON with ${data.features.length} features`);
         }
 
+        async function loadSubgraphMigrationGeojson(upToDate = "") {
+          if (!lastRoot) {
+            setStatus("Render a graph first to load subgraph migration");
+            return;
+          }
+          const query = buildSubgraphQuery();
+          const upto = upToDate ? `&up_to_date=${encodeURIComponent(upToDate)}` : "";
+          const data = await requestJson(`/circles/${selectedCircle}/graph/subgraph/migration-geojson?${query}${upto}`, { headers });
+          setSubgraphMigrationGeoJson(data);
+          if (!upToDate) {
+            const pointDates = Array.from(new Set(
+              (data.features || [])
+                .filter((f) => f.geometry && f.geometry.type === "Point" && f.properties && f.properties.from_date)
+                .map((f) => f.properties.from_date)
+            )).sort();
+            setSubgraphMigrationDates(pointDates);
+            setSubgraphMigrationIndex(pointDates.length ? pointDates.length - 1 : 0);
+          }
+          setStatus(`Loaded subgraph migration GeoJSON with ${data.features.length} features`);
+        }
+
+        function setSubgraphMigrationCursor(nextIndex) {
+          if (!subgraphMigrationDates.length) return;
+          const clamped = Math.max(0, Math.min(subgraphMigrationDates.length - 1, nextIndex));
+          setSubgraphMigrationIndex(clamped);
+          const date = subgraphMigrationDates[clamped];
+          loadSubgraphMigrationGeojson(date).catch((x) => setStatus(x.message));
+        }
+
         async function onTimelineItemClick(item) {
           if (item.kind === "life" && item.ref_id) {
             applyPersonFocus(item.ref_id);
@@ -1126,6 +1232,20 @@
           };
           return () => ws.close();
         }, [selectedCircle, activeUserId, authToken, discussionThreadId]);
+        useEffect(() => {
+          if (!isSubgraphMigrationPlaying || subgraphMigrationDates.length <= 1) return undefined;
+          migrationTimerRef.current = window.setInterval(() => {
+            setSubgraphMigrationIndex((prev) => {
+              const next = prev >= subgraphMigrationDates.length - 1 ? 0 : prev + 1;
+              const date = subgraphMigrationDates[next];
+              loadSubgraphMigrationGeojson(date).catch((x) => setStatus(x.message));
+              return next;
+            });
+          }, 1100);
+          return () => {
+            if (migrationTimerRef.current) window.clearInterval(migrationTimerRef.current);
+          };
+        }, [isSubgraphMigrationPlaying, subgraphMigrationDates, lastRoot, selectedCircle, lastDirection, lastDepth, lastMode, lastLateralTypes, lastLateralDepth]);
 
         const gridCols = `${leftOpen ? "320px" : "44px"} 1fr ${rightOpen ? "340px" : "44px"}`;
 
@@ -1484,6 +1604,84 @@
                     React.createElement("button", { key: "b", type: "submit", disabled: !selectedPersonId || !canEditRecords }, "Add Place"),
                     React.createElement("button", { key: "b2", className: "ghost", type: "button", disabled: !selectedPersonId, onClick: () => loadMigrationGeojson(selectedPersonId).catch((x) => setStatus(x.message)) }, "Load Migration GeoJSON"),
                   ]),
+                  React.createElement("div", { className: "muted", key: "sgm-head" }, "Subgraph Migration"),
+                  React.createElement("div", { style: { display: "grid", gap: "6px" }, key: "sgm-controls" }, [
+                    React.createElement("button", { key: "load", type: "button", className: "ghost", disabled: !lastRoot, onClick: () => loadSubgraphMigrationGeojson("").catch((x) => setStatus(x.message)) }, "Load Subgraph Migration"),
+                    React.createElement("div", { className: "muted", key: "hint" }, subgraphMigrationDates.length ? `As of ${subgraphMigrationDates[subgraphMigrationIndex]}` : "Load migration to enable playback"),
+                    React.createElement("input", {
+                      key: "slider",
+                      type: "range",
+                      min: 0,
+                      max: Math.max(0, subgraphMigrationDates.length - 1),
+                      value: Math.min(subgraphMigrationIndex, Math.max(0, subgraphMigrationDates.length - 1)),
+                      disabled: subgraphMigrationDates.length === 0,
+                      onChange: (e) => setSubgraphMigrationCursor(Number(e.target.value)),
+                    }),
+                    React.createElement("button", {
+                      key: "play",
+                      type: "button",
+                      className: "btn",
+                      disabled: subgraphMigrationDates.length <= 1,
+                      onClick: () => setIsSubgraphMigrationPlaying((v) => !v),
+                    }, isSubgraphMigrationPlaying ? "Pause Playback" : "Play Playback"),
+                  ]),
+                  subgraphMigrationGeoJson
+                    ? React.createElement(
+                        "a",
+                        {
+                          key: "sgm-geo",
+                          href: `data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(subgraphMigrationGeoJson, null, 2))}`,
+                          download: `subgraph_migration_${lastRoot || "root"}.geojson`,
+                        },
+                        "Download Subgraph Migration GeoJSON"
+                      )
+                    : null,
+                  subgraphMigrationGeoJson
+                    ? React.createElement("div", { key: "sgm-viz", style: { border: "1px solid #d7cfc2", borderRadius: "10px", padding: "8px", background: "#fbfcfd" } }, [
+                        React.createElement("div", { className: "muted", key: "sgm-viz-title", style: { marginBottom: "6px" } }, "Playback View (projected migration paths)"),
+                        React.createElement("svg", { key: "sgm-svg", width: "100%", viewBox: `0 0 ${subgraphMigrationView.width} ${subgraphMigrationView.height}` }, [
+                          React.createElement("rect", {
+                            key: "bg",
+                            x: 0,
+                            y: 0,
+                            width: subgraphMigrationView.width,
+                            height: subgraphMigrationView.height,
+                            fill: "#f7fafc",
+                            stroke: "#d2dde8",
+                          }),
+                          ...subgraphMigrationView.lines.map((line) =>
+                            React.createElement("path", {
+                              key: line.key,
+                              d: line.d,
+                              fill: "none",
+                              stroke: "#91a8ba",
+                              strokeWidth: 2.5,
+                              strokeLinecap: "round",
+                            })
+                          ),
+                          ...subgraphMigrationView.points.map((pt) =>
+                            React.createElement("g", { key: pt.key }, [
+                              React.createElement("circle", {
+                                key: "c",
+                                cx: pt.x,
+                                cy: pt.y,
+                                r: 4.8,
+                                fill: "#1e6c6d",
+                                stroke: "#ffffff",
+                                strokeWidth: 1.4,
+                              }),
+                              React.createElement("text", {
+                                key: "t",
+                                x: pt.x + 7,
+                                y: pt.y - 7,
+                                fontSize: 10,
+                                fill: "#345",
+                              }, `${pt.label}${pt.fromDate ? ` (${pt.fromDate})` : ""}`),
+                            ])
+                          ),
+                        ]),
+                      ])
+                    : null,
                   migrationGeoJson
                     ? React.createElement(
                         "a",
@@ -1492,7 +1690,7 @@
                           href: `data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(migrationGeoJson, null, 2))}`,
                           download: `migration_${selectedPersonId || "person"}.geojson`,
                         },
-                        "Download GeoJSON"
+                        "Download Selected Person GeoJSON"
                       )
                     : null,
                   React.createElement("div", { className: "list", key: "l" },
@@ -1569,6 +1767,13 @@
                   React.createElement("summary", { key: "s" }, "Timeline"),
                   React.createElement("form", { key: "f", onSubmit: (e) => loadTimeline(e).catch((x) => setStatus(x.message)) }, [
                     React.createElement("select", { key: "p", name: "person_id" }, personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))),
+                    React.createElement("select", { key: "scope", value: timelineScope, onChange: (e) => setTimelineScope(e.target.value) }, [
+                      React.createElement("option", { key: "person", value: "person" }, "person"),
+                      React.createElement("option", { key: "subgraph", value: "subgraph" }, "subgraph"),
+                    ]),
+                    React.createElement("input", { key: "from", type: "date", value: timelineFromDate, onChange: (e) => setTimelineFromDate(e.target.value), placeholder: "From date" }),
+                    React.createElement("input", { key: "to", type: "date", value: timelineToDate, onChange: (e) => setTimelineToDate(e.target.value), placeholder: "To date" }),
+                    React.createElement("input", { key: "et", value: timelineEventTypes, onChange: (e) => setTimelineEventTypes(e.target.value), placeholder: "event types: world,political..." }),
                     React.createElement("button", { key: "b", type: "submit", disabled: personOptions.length === 0 }, "Load Timeline"),
                   ]),
                   React.createElement("div", { className: "list", key: "l" },

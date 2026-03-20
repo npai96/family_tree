@@ -208,6 +208,121 @@ def test_subgraph_family_expanded_can_include_lateral_relations(tmp_path: Path) 
     assert "spouse_of" in edge_types
 
 
+def test_subgraph_timeline_and_migration_geojson(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    owner_id = create_user(client, "Owner")
+    circle = client.post("/circles", json={"name": "Subgraph Context"}, headers={"X-User-Id": owner_id})
+    circle_id = circle.json()["id"]
+
+    parent_id = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Parent", "birth_date": "1960-01-01", "birth_place": "Chennai"},
+        headers={"X-User-Id": owner_id},
+    ).json()["id"]
+    child_id = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Child", "birth_date": "1990-01-01"},
+        headers={"X-User-Id": owner_id},
+    ).json()["id"]
+    assert client.post(
+        f"/circles/{circle_id}/relationships",
+        json={"from_person_id": parent_id, "to_person_id": child_id, "relationship_type": "parent_of"},
+        headers={"X-User-Id": owner_id},
+    ).status_code == 200
+
+    event = client.post(
+        f"/circles/{circle_id}/context-events",
+        json={
+            "date": "2000-01-01",
+            "title": "Regional event",
+            "event_type": "social",
+            "description": "Context for family",
+        },
+        headers={"X-User-Id": owner_id},
+    )
+    event_id = event.json()["id"]
+    assert client.post(
+        f"/circles/{circle_id}/persons/{child_id}/context-links",
+        json={"context_event_id": event_id, "relevance_note": "affected schooling"},
+        headers={"X-User-Id": owner_id},
+    ).status_code == 200
+
+    assert client.post(
+        f"/circles/{circle_id}/persons/{child_id}/places",
+        json={
+            "place_name": "Bengaluru",
+            "country": "India",
+            "lat": 12.9716,
+            "lng": 77.5946,
+            "from_date": "2005-01-01",
+        },
+        headers={"X-User-Id": owner_id},
+    ).status_code == 200
+    assert client.post(
+        f"/circles/{circle_id}/persons/{child_id}/places",
+        json={
+            "place_name": "Singapore",
+            "country": "Singapore",
+            "lat": 1.3521,
+            "lng": 103.8198,
+            "from_date": "2015-01-01",
+        },
+        headers={"X-User-Id": owner_id},
+    ).status_code == 200
+
+    timeline = client.get(
+        f"/circles/{circle_id}/graph/subgraph/timeline",
+        params={
+            "root_person_id": child_id,
+            "direction": "ancestors",
+            "depth": 2,
+            "mode": "lineage",
+            "from_date": "1980-01-01",
+            "to_date": "2010-12-31",
+        },
+        headers={"X-User-Id": owner_id},
+    )
+    assert timeline.status_code == 200
+    tl = timeline.json()
+    assert len(tl) >= 2
+    assert all("1980-01-01" <= row["date"] <= "2010-12-31" for row in tl)
+
+    migration_now = client.get(
+        f"/circles/{circle_id}/graph/subgraph/migration-geojson",
+        params={
+            "root_person_id": child_id,
+            "direction": "ancestors",
+            "depth": 2,
+            "mode": "lineage",
+        },
+        headers={"X-User-Id": owner_id},
+    )
+    assert migration_now.status_code == 200
+    fc = migration_now.json()
+    assert fc["type"] == "FeatureCollection"
+    assert any(f["geometry"]["type"] == "Point" for f in fc["features"])
+
+    migration_cutoff = client.get(
+        f"/circles/{circle_id}/graph/subgraph/migration-geojson",
+        params={
+            "root_person_id": child_id,
+            "direction": "ancestors",
+            "depth": 2,
+            "mode": "lineage",
+            "up_to_date": "2010-12-31",
+        },
+        headers={"X-User-Id": owner_id},
+    )
+    assert migration_cutoff.status_code == 200
+    fc_cutoff = migration_cutoff.json()
+    point_dates = [
+        f["properties"].get("from_date")
+        for f in fc_cutoff["features"]
+        if f["geometry"]["type"] == "Point"
+    ]
+    assert all((d is None) or (d <= "2010-12-31") for d in point_dates)
+
+
 def test_change_request_approval_updates_person(tmp_path: Path) -> None:
     client = build_client(tmp_path)
     owner_id = create_user(client, "Owner")
