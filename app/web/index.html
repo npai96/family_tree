@@ -3,78 +3,106 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Family Tree MVP</title>
+    <title>Viraasat | Family Chronicle</title>
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300..800;1,6..72,300..800&family=Manrope:wght@300..800&display=swap"
+    />
     <style>
       :root {
-        --bg: #f3efe7;
-        --panel: #fcfaf5;
-        --line: #d7cfc2;
-        --ink: #27313a;
-        --muted: #62707f;
-        --accent: #1e6c6d;
-        --accent-soft: #dfefeb;
+        --surface: #fbf9f5;
+        --surface-low: #f5f3ef;
+        --surface-high: #eae8e4;
+        --surface-card: #ffffff;
+        --outline: rgba(196, 198, 205, 0.24);
+        --ink: #1b1c1a;
+        --muted: #5f6978;
+        --primary: #111a77;
+        --primary-container: #2b348d;
+        --secondary: #a04100;
+        --secondary-fixed: #ffdbcc;
+        --accent: #1f6d70;
+        --accent-soft: #d7e9e4;
+        --graph-edge: #8ca4b7;
+        --graph-highlight: #b56d22;
       }
       * { box-sizing: border-box; }
       body {
         margin: 0;
-        font-family: "Source Sans Pro", "Segoe UI", sans-serif;
+        font-family: "Manrope", "Segoe UI", sans-serif;
         color: var(--ink);
-        background: radial-gradient(circle at top right, #e7f0f1, var(--bg) 45%);
+        background:
+          radial-gradient(1200px 600px at -10% -10%, rgba(255, 219, 204, 0.45), transparent 60%),
+          radial-gradient(1000px 500px at 110% -20%, rgba(189, 194, 255, 0.30), transparent 60%),
+          var(--surface);
       }
       .topbar {
         position: sticky;
         top: 0;
-        z-index: 20;
+        z-index: 30;
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: 10px 14px;
-        background: rgba(252, 250, 245, 0.93);
-        border-bottom: 1px solid var(--line);
-        backdrop-filter: blur(6px);
+        gap: 12px;
+        padding: 12px 16px;
+        background: rgba(251, 249, 245, 0.72);
+        backdrop-filter: blur(16px);
+        box-shadow: 0 10px 28px rgba(27, 28, 26, 0.05);
       }
       .title {
-        font-family: "Palatino Linotype", "Book Antiqua", serif;
-        font-size: 24px;
+        font-family: "Newsreader", Georgia, serif;
+        color: var(--primary);
+        font-size: 34px;
         font-weight: 700;
+        line-height: 1;
+        letter-spacing: -0.02em;
       }
       .subtitle {
-        font-size: 13px;
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
         color: var(--muted);
       }
       .btn {
-        border: 1px solid var(--line);
-        background: var(--panel);
-        color: var(--ink);
+        border: 1px solid var(--outline);
+        background: rgba(255, 255, 255, 0.82);
+        color: #33404d;
         border-radius: 999px;
-        padding: 6px 10px;
+        padding: 8px 12px;
         cursor: pointer;
         font-size: 12px;
+        font-weight: 700;
+      }
+      .btn:hover {
+        background: #fff;
       }
       .shell {
         height: calc(100vh - 62px);
         display: grid;
-        gap: 8px;
-        padding: 8px;
+        gap: 12px;
+        padding: 12px;
       }
       .sidebar {
-        background: var(--panel);
-        border: 1px solid var(--line);
-        border-radius: 12px;
+        background: rgba(245, 243, 239, 0.96);
+        border: 1px solid var(--outline);
+        border-radius: 20px;
         overflow: hidden;
         display: flex;
         flex-direction: column;
+        box-shadow: 0 14px 34px rgba(27, 28, 26, 0.05);
       }
       .sidebar-head {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: 10px;
-        border-bottom: 1px solid var(--line);
+        padding: 12px 14px;
+        font-family: "Newsreader", Georgia, serif;
+        color: var(--primary);
+        font-size: 22px;
       }
       .sidebar-body {
         overflow: auto;
-        padding: 10px;
+        padding: 10px 12px 14px;
       }
       .collapsed {
         align-items: center;
@@ -85,15 +113,23 @@
         display: none;
       }
       .card {
-        border: 1px solid var(--line);
-        border-radius: 10px;
+        border: 1px solid var(--outline);
+        border-radius: 18px;
         padding: 10px;
-        margin-bottom: 10px;
-        background: #fff;
+        margin-bottom: 12px;
+        background: rgba(255, 255, 255, 0.92);
+        box-shadow: 0 8px 24px rgba(27, 28, 26, 0.04);
       }
       details.card summary {
         cursor: pointer;
-        font-weight: 700;
+        font-family: "Newsreader", Georgia, serif;
+        color: #22303f;
+        font-size: 17px;
+        font-weight: 650;
+        margin-bottom: 10px;
+      }
+      details.card[open] summary {
+        margin-bottom: 12px;
       }
       label {
         display: block;
@@ -101,70 +137,109 @@
         color: var(--muted);
         margin-bottom: 4px;
       }
-      input, select, button {
+      input, select, textarea {
         width: 100%;
-        padding: 8px;
-        border-radius: 8px;
-        border: 1px solid var(--line);
+        padding: 10px 12px;
+        border-radius: 16px;
+        border: 1px solid transparent;
         margin-bottom: 8px;
-        background: #fff;
+        background: var(--surface-high);
+        font-family: "Manrope", sans-serif;
+        color: #263445;
+        font-size: 14px;
+      }
+      input:focus, select:focus, textarea:focus {
+        outline: none;
+        box-shadow: inset 0 -2px 0 rgba(255, 222, 160, 0.9);
       }
       button {
-        background: var(--accent);
+        background: linear-gradient(135deg, var(--primary) 0%, var(--primary-container) 100%);
         color: #fff;
         border: none;
         font-weight: 700;
         cursor: pointer;
+        transition: transform 120ms ease, opacity 180ms ease;
+      }
+      form button {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 16px;
+        margin-bottom: 8px;
+      }
+      button:hover { opacity: 0.95; }
+      button:active { transform: translateY(1px); }
+      textarea {
+        width: 100%;
+        min-height: 72px;
+        border-radius: 16px;
+        border: 1px solid transparent;
+        background: var(--surface-high);
+        padding: 10px 12px;
+        margin-bottom: 8px;
+        resize: vertical;
+        font-family: "Manrope", sans-serif;
       }
       button:disabled {
         opacity: 0.5;
         cursor: not-allowed;
       }
       .ghost {
-        background: #516171;
+        background: #5b697a;
       }
       .muted { color: var(--muted); font-size: 12px; }
       .list {
         max-height: 180px;
         overflow: auto;
-        border: 1px dashed var(--line);
-        border-radius: 8px;
+        border: 1px dashed var(--outline);
+        border-radius: 14px;
         padding: 8px;
         font-size: 13px;
+        background: rgba(255, 255, 255, 0.75);
       }
-      .item { padding: 6px 0; border-bottom: 1px dotted var(--line); }
+      .item { padding: 8px 0; border-bottom: 1px dotted rgba(196, 198, 205, 0.5); }
       .item:last-child { border-bottom: none; }
       .pill {
         display: inline-block;
-        padding: 2px 8px;
+        padding: 3px 10px;
         border-radius: 999px;
-        background: var(--accent-soft);
-        color: #2f4f4f;
+        background: var(--secondary-fixed);
+        color: #7a3000;
         font-size: 11px;
         margin-left: 6px;
       }
+      a {
+        color: var(--secondary);
+        font-weight: 700;
+      }
       .graph-wrap {
-        border: 1px solid var(--line);
-        border-radius: 12px;
-        background: linear-gradient(180deg, #fefefe, #f7f7f7);
+        border: 1px solid var(--outline);
+        border-radius: 24px;
+        background:
+          radial-gradient(900px 420px at 85% -20%, rgba(224, 224, 255, 0.48), transparent 70%),
+          linear-gradient(180deg, #fff, #faf8f4);
         position: relative;
         overflow: hidden;
+        box-shadow: 0 24px 48px rgba(27, 28, 26, 0.05);
       }
       .status-badge {
         position: absolute;
         top: 10px;
         left: 10px;
         z-index: 10;
-        font-size: 12px;
-        color: #1f4f4f;
-        background: rgba(223, 239, 235, 0.9);
-        border: 1px solid #b9d7d0;
+        font-size: 15px;
+        color: #1b5156;
+        background: rgba(215, 233, 228, 0.9);
+        border: 1px solid rgba(144, 188, 177, 0.7);
         border-radius: 999px;
-        padding: 5px 10px;
+        padding: 8px 14px;
       }
       .graph-scroll {
         height: 100%;
         overflow: auto;
+      }
+      .d3-graph-canvas {
+        display: block;
+        min-width: 100%;
       }
       .timeline-dot {
         display: inline-block;
@@ -173,10 +248,78 @@
         border-radius: 999px;
         margin-right: 6px;
       }
+      .lineage-strip {
+        margin: 10px 12px 0;
+        padding: 14px;
+        border-radius: 18px;
+        border: 1px solid var(--outline);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(245, 243, 239, 0.78));
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+      }
+      .lineage-strip-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 10px;
+      }
+      .lineage-strip-title {
+        font-family: "Newsreader", Georgia, serif;
+        font-size: 26px;
+        color: var(--primary);
+      }
+      .lineage-strip-track {
+        display: flex;
+        gap: 14px;
+        overflow-x: auto;
+        padding-bottom: 4px;
+      }
+      .lineage-item {
+        min-width: 190px;
+        width: auto;
+        background: rgba(255, 255, 255, 0.92);
+        border: 1px solid var(--outline);
+        border-radius: 14px;
+        padding: 10px 12px;
+        margin-bottom: 0;
+        text-align: left;
+      }
+      .lineage-name {
+        font-family: "Newsreader", Georgia, serif;
+        font-size: 22px;
+        color: #20304a;
+        line-height: 1.1;
+      }
+      .lineage-years {
+        color: var(--secondary);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.03em;
+      }
+      .lineage-link {
+        align-self: center;
+        min-width: 28px;
+        height: 2px;
+        background: rgba(160, 65, 0, 0.45);
+      }
+      .migration-panel {
+        display: grid;
+        gap: 8px;
+        padding: 10px;
+        border-radius: 14px;
+        border: 1px solid var(--outline);
+        background: rgba(255, 255, 255, 0.82);
+      }
+      .migration-map-frame {
+        border: 1px solid var(--outline) !important;
+        border-radius: 12px !important;
+        margin-top: 8px;
+        box-shadow: 0 10px 24px rgba(27, 28, 26, 0.06);
+      }
       @media (max-width: 1100px) {
         .shell { grid-template-columns: 1fr !important; height: auto; }
         .sidebar { max-height: 380px; }
         .graph-wrap { height: 70vh; }
+        .title { font-size: 28px; }
       }
     </style>
   </head>
@@ -184,6 +327,7 @@
     <div id="root"></div>
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/d3@7/dist/d3.min.js"></script>
     <script>
       const { useEffect, useMemo, useRef, useState } = React;
         const RELATIONSHIP_TYPES = [
@@ -249,29 +393,13 @@
         return { width, height, pos, nodes, edges };
       }
 
-      function GraphView({
-        subgraph,
-        rootPersonId,
-        zoom,
-        selectedNodeId,
-        highlightedNodeIds,
-        highlightedEdgeKeys,
-        onNodeClick,
-      }) {
-        if (!subgraph || !subgraph.persons || !subgraph.persons.length) {
-          return React.createElement("div", { className: "muted", style: { padding: "14px" } }, "Load a subgraph to begin exploration.");
-        }
-
-        const { width, height, pos, nodes, edges } = computeLayout(subgraph, rootPersonId);
-        const names = {};
-        nodes.forEach((n) => { names[n.id] = n.full_name; });
+      function normalizeDisplayEdges(edges) {
         const undirectedTypes = new Set(["spouse_of", "sibling_of", "cousin_of", "partner_of"]);
         const displayEdgeMap = new Map();
         edges.forEach((edge) => {
           let fromId = edge.from_person_id;
           let toId = edge.to_person_id;
           let relType = edge.relationship_type;
-
           if (relType === "child_of") {
             fromId = edge.to_person_id;
             toId = edge.from_person_id;
@@ -285,12 +413,10 @@
             toId = edge.from_person_id;
             relType = "grandparent_of";
           }
-
           if (undirectedTypes.has(relType) && fromId > toId) {
             fromId = edge.to_person_id;
             toId = edge.from_person_id;
           }
-
           const dedupeKey = `${fromId}|${toId}|${relType}`;
           if (!displayEdgeMap.has(dedupeKey)) {
             displayEdgeMap.set(dedupeKey, {
@@ -301,60 +427,82 @@
             });
           }
         });
-        const displayEdges = Array.from(displayEdgeMap.values());
-        const pairCounts = new Map();
-        displayEdges.forEach((edge) => {
-          const pairKey = undirectedTypes.has(edge.relationship_type)
-            ? [edge.from_person_id, edge.to_person_id].sort().join("|")
-            : `${edge.from_person_id}|${edge.to_person_id}`;
-          pairCounts.set(pairKey, (pairCounts.get(pairKey) || 0) + 1);
-        });
-        const pairSeen = new Map();
-        const directedIncomingCounts = new Map();
-        const directedOutgoingCounts = new Map();
-        displayEdges.forEach((edge) => {
-          if (undirectedTypes.has(edge.relationship_type)) return;
-          directedIncomingCounts.set(edge.to_person_id, (directedIncomingCounts.get(edge.to_person_id) || 0) + 1);
-          directedOutgoingCounts.set(edge.from_person_id, (directedOutgoingCounts.get(edge.from_person_id) || 0) + 1);
-        });
-        const directedIncomingSeen = new Map();
-        const directedOutgoingSeen = new Map();
+        return { undirectedTypes, displayEdges: Array.from(displayEdgeMap.values()) };
+      }
 
-        return React.createElement("svg", { width: Math.ceil(width * zoom), height: Math.ceil(height * zoom) }, [
-          React.createElement("g", { key: "scale", transform: `scale(${zoom})` }, [
-            React.createElement("defs", { key: "defs" }, [
-              React.createElement("marker", {
-                key: "arrow",
-                id: "arrowhead",
-                markerWidth: 10,
-                markerHeight: 7,
-                refX: 8,
-                refY: 3.5,
-                orient: "auto",
-              }, [
-                React.createElement("polygon", { key: "poly", points: "0 0, 10 3.5, 0 7", fill: "#97a8b6" })
-              ])
-            ]),
-            ...displayEdges.map((e) => {
-              let fromId = e.from_person_id;
-              let toId = e.to_person_id;
-              let from = pos[fromId];
-              let to = pos[toId];
-              if (!from || !to) return null;
-              const isUndirected = undirectedTypes.has(e.relationship_type);
+      function GraphView({
+        subgraph,
+        rootPersonId,
+        zoom,
+        selectedNodeId,
+        highlightedNodeIds,
+        highlightedEdgeKeys,
+        onNodeClick,
+      }) {
+        const svgRef = useRef(null);
+        const transformRef = useRef(null);
+        const hasData = Boolean(subgraph && subgraph.persons && subgraph.persons.length);
+        const safeSubgraph = hasData ? subgraph : { persons: [], relationships: [] };
+        const { width, height, pos, nodes, edges } = computeLayout(safeSubgraph, rootPersonId);
+        const names = {};
+        nodes.forEach((n) => { names[n.id] = n.full_name; });
+        const { undirectedTypes, displayEdges } = normalizeDisplayEdges(edges);
+
+        useEffect(() => {
+          if (!hasData || !svgRef.current || typeof d3 === "undefined") return;
+          const svg = d3.select(svgRef.current);
+          svg.selectAll("*").remove();
+
+          const stage = svg.append("g");
+          const root = stage.append("g");
+
+          const localPos = {};
+          nodes.forEach((n) => {
+            const base = pos[n.id] || { x: 170, y: 100 };
+            localPos[n.id] = { x: base.x, y: base.y };
+          });
+
+          function drawGraph() {
+            root.selectAll(".edge-layer,.node-layer").remove();
+            const pairCounts = new Map();
+            displayEdges.forEach((edge) => {
+              const pairKey = undirectedTypes.has(edge.relationship_type)
+                ? [edge.from_person_id, edge.to_person_id].sort().join("|")
+                : `${edge.from_person_id}|${edge.to_person_id}`;
+              pairCounts.set(pairKey, (pairCounts.get(pairKey) || 0) + 1);
+            });
+            const pairSeen = new Map();
+            const directedIncomingCounts = new Map();
+            const directedOutgoingCounts = new Map();
+            displayEdges.forEach((edge) => {
+              if (undirectedTypes.has(edge.relationship_type)) return;
+              directedIncomingCounts.set(edge.to_person_id, (directedIncomingCounts.get(edge.to_person_id) || 0) + 1);
+              directedOutgoingCounts.set(edge.from_person_id, (directedOutgoingCounts.get(edge.from_person_id) || 0) + 1);
+            });
+            const directedIncomingSeen = new Map();
+            const directedOutgoingSeen = new Map();
+
+            const edgeLayer = root.append("g").attr("class", "edge-layer");
+            const nodeLayer = root.append("g").attr("class", "node-layer");
+
+            displayEdges.forEach((edge) => {
+              let fromId = edge.from_person_id;
+              let toId = edge.to_person_id;
+              let from = localPos[fromId];
+              let to = localPos[toId];
+              if (!from || !to) return;
+              const isUndirected = undirectedTypes.has(edge.relationship_type);
               if (isUndirected && from.x > to.x) {
-                fromId = e.to_person_id;
-                toId = e.from_person_id;
-                from = pos[fromId];
-                to = pos[toId];
+                fromId = edge.to_person_id;
+                toId = edge.from_person_id;
+                from = localPos[fromId];
+                to = localPos[toId];
               }
-              const pairKey = isUndirected
-                ? [fromId, toId].sort().join("|")
-                : `${fromId}|${toId}`;
+              const pairKey = isUndirected ? [fromId, toId].sort().join("|") : `${fromId}|${toId}`;
               const seen = pairSeen.get(pairKey) || 0;
               pairSeen.set(pairKey, seen + 1);
               const count = pairCounts.get(
-                isUndirected ? [e.from_person_id, e.to_person_id].sort().join("|") : `${e.from_person_id}|${e.to_person_id}`
+                isUndirected ? [edge.from_person_id, edge.to_person_id].sort().join("|") : `${edge.from_person_id}|${edge.to_person_id}`
               ) || 1;
               const laneOffset = (seen - (count - 1) / 2) * 14;
               let sourceSpread = 0;
@@ -364,12 +512,12 @@
                 directedOutgoingSeen.set(fromId, outSeen + 1);
                 const outCount = directedOutgoingCounts.get(fromId) || 1;
                 sourceSpread = (outSeen - (outCount - 1) / 2) * 10;
-
                 const inSeen = directedIncomingSeen.get(toId) || 0;
                 directedIncomingSeen.set(toId, inSeen + 1);
                 const inCount = directedIncomingCounts.get(toId) || 1;
                 targetSpread = (inSeen - (inCount - 1) / 2) * 10;
               }
+
               const deltaX = to.x - from.x;
               const deltaY = to.y - from.y;
               const isPrimarilyVertical = Math.abs(deltaY) > Math.abs(deltaX);
@@ -384,82 +532,156 @@
               if (isPrimarilyVertical) {
                 const fromDown = to.y >= from.y;
                 startX = from.x + laneOffset + sourceSpread;
-                startY = from.y + (fromDown ? 48 : 0);
+                startY = from.y + (fromDown ? 52 : 0);
                 endX = to.x + laneOffset + targetSpread;
-                endY = to.y + (fromDown ? 0 : 48);
+                endY = to.y + (fromDown ? 0 : 52);
                 const controlDeltaY = Math.max(36, Math.abs(endY - startY) * 0.35);
                 control1X = startX;
                 control1Y = startY + (fromDown ? controlDeltaY : -controlDeltaY);
                 control2X = endX;
                 control2Y = endY - (fromDown ? controlDeltaY : -controlDeltaY);
               } else {
-                startX = from.x + 80;
-                startY = from.y + 24 + laneOffset + sourceSpread;
-                endX = to.x - 80;
-                endY = to.y + 24 + laneOffset + targetSpread;
-                const controlDeltaX = Math.max(44, Math.abs(endX - startX) * 0.35);
-                control1X = startX + controlDeltaX;
-                control1Y = startY;
-                control2X = endX - controlDeltaX;
-                control2Y = endY;
+                startX = from.x + 92;
+                startY = from.y + 26 + laneOffset + sourceSpread;
+                endX = to.x - 92;
+                endY = to.y + 26 + laneOffset + targetSpread;
+                const horizontalSpan = Math.abs(endX - startX);
+                if (horizontalSpan < 44) {
+                  const bulge = 54 + Math.abs(laneOffset) * 1.2;
+                  control1X = startX + (startX <= endX ? 18 : -18);
+                  control1Y = startY - bulge;
+                  control2X = endX + (startX <= endX ? -18 : 18);
+                  control2Y = endY - bulge;
+                } else {
+                  const controlDeltaX = Math.max(44, horizontalSpan * 0.35);
+                  control1X = startX + (startX <= endX ? controlDeltaX : -controlDeltaX);
+                  control1Y = startY;
+                  control2X = endX + (startX <= endX ? -controlDeltaX : controlDeltaX);
+                  control2Y = endY;
+                }
+              }
+              if (!isUndirected) {
+                const vecX = endX - startX;
+                const vecY = endY - startY;
+                const len = Math.max(1, Math.hypot(vecX, vecY));
+                const ux = vecX / len;
+                const uy = vecY / len;
+                const arrowGap = 11;
+                endX -= ux * arrowGap;
+                endY -= uy * arrowGap;
+                control2X -= ux * (arrowGap * 0.8);
+                control2Y -= uy * (arrowGap * 0.8);
               }
               const labelX = (startX + endX) / 2;
               const labelY = (startY + endY) / 2 - 9;
-              const isHighlighted = (
-                highlightedEdgeKeys.has(edgeKey(e.from_person_id, e.to_person_id)) ||
-                highlightedEdgeKeys.has(edgeKey(e.to_person_id, e.from_person_id))
+              const highlighted = (
+                highlightedEdgeKeys.has(edgeKey(edge.from_person_id, edge.to_person_id)) ||
+                highlightedEdgeKeys.has(edgeKey(edge.to_person_id, edge.from_person_id))
               );
-              return React.createElement("g", { key: e.id }, [
-                React.createElement("path", {
-                  key: "line",
-                  d: `M ${startX} ${startY} C ${control1X} ${control1Y}, ${control2X} ${control2Y}, ${endX} ${endY}`,
-                  fill: "none",
-                  stroke: isHighlighted ? "#d18b3d" : "#97a8b6",
-                  strokeWidth: isHighlighted ? 3.5 : 2,
-                  markerEnd: isUndirected ? undefined : "url(#arrowhead)"
-                }),
-                React.createElement("text", {
-                  key: "label",
-                  x: labelX,
-                  y: labelY,
-                  textAnchor: "middle",
-                  fontSize: 11,
-                  fill: isHighlighted ? "#a96a26" : "#657786"
-                }, e.relationship_type)
-              ]);
-            }),
-            ...nodes.map((n) => {
-              const p = pos[n.id];
-              const root = n.id === rootPersonId;
-              const selected = n.id === selectedNodeId;
-              const highlighted = highlightedNodeIds.has(n.id);
-              const fill = root ? "#1e6c6d" : selected ? "#f2c98e" : highlighted ? "#f5e6cf" : "#fff";
-              const stroke = root ? "#1e6c6d" : selected ? "#b87524" : highlighted ? "#d0a36b" : "#9eb1bf";
-              const textColor = root ? "#fff" : "#2b3641";
-              return React.createElement("g", { key: n.id, onClick: () => onNodeClick(n.id), style: { cursor: "pointer" } }, [
-                React.createElement("rect", {
-                  key: "r",
-                  x: p.x - 80,
-                  y: p.y,
-                  width: 160,
-                  height: 48,
-                  rx: 12,
-                  fill,
-                  stroke,
-                  strokeWidth: selected ? 2.8 : 1.7
-                }),
-                React.createElement("text", {
-                  key: "t",
-                  x: p.x,
-                  y: p.y + 29,
-                  textAnchor: "middle",
-                  fontSize: 12,
-                  fill: textColor
-                }, names[n.id] || n.id.slice(0, 8))
-              ]);
-            })
-          ])
-        ]);
+
+              const edgeColor = highlighted ? "var(--graph-highlight)" : "var(--graph-edge)";
+              edgeLayer
+                .append("path")
+                .attr("d", `M ${startX} ${startY} C ${control1X} ${control1Y}, ${control2X} ${control2Y}, ${endX} ${endY}`)
+                .attr("fill", "none")
+                .attr("stroke", edgeColor)
+                .attr("stroke-width", highlighted ? 3.5 : 2)
+                .attr("stroke-linecap", "round");
+
+              if (!isUndirected) {
+                const tanX = endX - control2X;
+                const tanY = endY - control2Y;
+                const tanLen = Math.max(1, Math.hypot(tanX, tanY));
+                const ux = tanX / tanLen;
+                const uy = tanY / tanLen;
+                const px = -uy;
+                const py = ux;
+                const headLen = 11;
+                const headWidth = 5;
+                const baseX = endX - ux * headLen;
+                const baseY = endY - uy * headLen;
+                const leftX = baseX + px * headWidth;
+                const leftY = baseY + py * headWidth;
+                const rightX = baseX - px * headWidth;
+                const rightY = baseY - py * headWidth;
+                edgeLayer
+                  .append("polygon")
+                  .attr("points", `${endX},${endY} ${leftX},${leftY} ${rightX},${rightY}`)
+                  .attr("fill", edgeColor)
+                  .attr("stroke", edgeColor)
+                  .attr("stroke-width", 0.8);
+              }
+
+              edgeLayer
+                .append("text")
+                .attr("x", labelX)
+                .attr("y", labelY)
+                .attr("text-anchor", "middle")
+                .attr("font-size", 14)
+                .attr("font-family", "Manrope, sans-serif")
+                .attr("font-weight", 650)
+                .attr("fill", highlighted ? "#9a5b1c" : "#607488")
+                .text(edge.relationship_type);
+            });
+
+            nodes.forEach((node) => {
+              const p = localPos[node.id];
+              if (!p) return;
+              const isRoot = node.id === rootPersonId;
+              const isSelected = node.id === selectedNodeId;
+              const isHighlighted = highlightedNodeIds.has(node.id);
+              const fill = isRoot ? "var(--accent)" : isSelected ? "#fde7c4" : isHighlighted ? "#f8eee1" : "#ffffff";
+              const stroke = isRoot ? "var(--accent)" : isSelected ? "#c98a39" : isHighlighted ? "#d7b07b" : "#9eb1bf";
+              const textColor = isRoot ? "#ffffff" : "#2b3641";
+              const g = nodeLayer.append("g").style("cursor", "pointer").datum(node);
+              g.append("rect")
+                .attr("x", p.x - 92)
+                .attr("y", p.y)
+                .attr("width", 184)
+                .attr("height", 52)
+                .attr("rx", 18)
+                .attr("fill", fill)
+                .attr("stroke", stroke)
+                .attr("stroke-width", isSelected ? 3 : 2);
+              g.append("text")
+                .attr("x", p.x)
+                .attr("y", p.y + 31)
+                .attr("text-anchor", "middle")
+                .attr("font-size", 16)
+                .attr("font-family", "Manrope, sans-serif")
+                .attr("font-weight", 650)
+                .attr("fill", textColor)
+                .text(names[node.id] || node.id.slice(0, 8));
+              g.on("click", () => onNodeClick(node.id));
+            });
+          }
+
+          const zoomBehavior = d3.zoom()
+            .scaleExtent([0.35, 2.4])
+            .on("zoom", (event) => {
+              transformRef.current = event.transform;
+              stage.attr("transform", event.transform);
+            });
+          svg.call(zoomBehavior);
+
+          const startingTransform = transformRef.current
+            ? d3.zoomIdentity.translate(transformRef.current.x, transformRef.current.y).scale(zoom)
+            : d3.zoomIdentity.scale(zoom);
+          svg.call(zoomBehavior.transform, startingTransform);
+
+          drawGraph();
+        }, [displayEdges, hasData, highlightedEdgeKeys, highlightedNodeIds, names, nodes, onNodeClick, pos, rootPersonId, selectedNodeId, undirectedTypes, width, height, zoom]);
+
+        if (!hasData) {
+          return React.createElement("div", { className: "muted", style: { padding: "14px" } }, "Load a subgraph to begin exploration.");
+        }
+
+        return React.createElement("svg", {
+          ref: svgRef,
+          className: "d3-graph-canvas",
+          width: Math.ceil(width * zoom),
+          height: Math.ceil(height * zoom),
+        });
       }
 
       function App() {
@@ -595,6 +817,18 @@
           }).filter((l) => l.d);
           return { points: projectedPoints, lines: projectedLines, width, height };
         }, [subgraphMigrationGeoJson]);
+        const lineageStripItems = useMemo(() => {
+          const rows = (subgraph?.persons || []).map((p) => ({
+            id: p.id,
+            name: p.full_name || p.id.slice(0, 8),
+            birthDate: p.birth_date || "",
+            deathDate: p.death_date || "",
+            birthPlace: p.birth_place || "",
+            sortDate: p.birth_date || p.death_date || "9999-12-31",
+          }));
+          rows.sort((a, b) => a.sortDate.localeCompare(b.sortDate) || a.name.localeCompare(b.name));
+          return rows.slice(0, 12);
+        }, [subgraph]);
 
         function setActiveUser(id) {
           if (id !== activeUserId && authToken) {
@@ -1328,8 +1562,8 @@
         return React.createElement(React.Fragment, null, [
           React.createElement("div", { className: "topbar", key: "top" }, [
             React.createElement("div", { key: "t" }, [
-              React.createElement("div", { className: "title", key: "ttl" }, "Family Chronicle"),
-              React.createElement("div", { className: "subtitle", key: "sub" }, "Trustworthy lineage mapping with contextual exploration"),
+              React.createElement("div", { className: "title", key: "ttl" }, "Viraasat"),
+              React.createElement("div", { className: "subtitle", key: "sub" }, "Digital Heirloom for South Asian Lineage"),
             ]),
             React.createElement("div", { key: "actions", style: { display: "flex", gap: "8px", alignItems: "center" } }, [
               React.createElement("button", { className: "btn", key: "zoom-in", onClick: () => setZoom((z) => Math.min(2.2, z + 0.15)) }, "Zoom +"),
@@ -1343,7 +1577,7 @@
           React.createElement("div", { className: "shell", style: { gridTemplateColumns: gridCols }, key: "shell" }, [
             React.createElement("aside", { className: `sidebar ${leftOpen ? "" : "collapsed"}`, key: "left" }, [
               React.createElement("div", { className: "sidebar-head", key: "h" }, [
-                React.createElement("span", { key: "txt" }, "Setup & Records"),
+                React.createElement("span", { key: "txt" }, "Archive Stewardship"),
                 React.createElement("button", { className: "btn", key: "b", onClick: () => setLeftOpen((v) => !v) }, leftOpen ? "◀" : "▶"),
               ]),
               leftOpen ? React.createElement("div", { className: "sidebar-body", key: "body" }, [
@@ -1381,7 +1615,7 @@
                   ),
                   React.createElement("div", { className: "muted", key: "ctx" }, activeUserName ? `Active: ${activeUserName}` : "No active user"),
                   React.createElement("div", { className: "muted", key: "ctx-role" }, selectedCircle ? `Role: ${activeCircleRole || "none"}` : "Role: n/a"),
-                  React.createElement("div", { className: "muted", key: "ctx2" }, authToken ? "Auth: signed in" : "Auth: not signed in (legacy header fallback active)"),
+                  React.createElement("div", { className: "muted", key: "ctx2" }, authToken ? "Auth: signed in" : "Auth: signed out"),
                 ]),
                 React.createElement("details", { className: "card", key: "m" }, [
                   React.createElement("summary", { key: "s" }, "Membership"),
@@ -1582,6 +1816,35 @@
                     ])
                   ])
                 ]),
+                React.createElement("section", { className: "lineage-strip", key: "lineage-strip" }, [
+                  React.createElement("div", { className: "lineage-strip-head", key: "h" }, [
+                    React.createElement("div", { className: "lineage-strip-title", key: "t" }, "Lineage Journey"),
+                    React.createElement("div", { className: "muted", key: "m" }, lineageStripItems.length ? `${lineageStripItems.length} profiles` : "Render a graph to build timeline"),
+                  ]),
+                  React.createElement("div", { className: "lineage-strip-track", key: "trk" },
+                    lineageStripItems.length
+                      ? lineageStripItems.flatMap((item, idx) => {
+                          const pieces = [
+                            React.createElement("button", {
+                              key: `card-${item.id}`,
+                              type: "button",
+                              className: "lineage-item",
+                              onMouseDown: (e) => e.preventDefault(),
+                              onClick: () => applyPersonFocus(item.id),
+                            }, [
+                              React.createElement("div", { className: "lineage-name", key: "n" }, item.name),
+                              React.createElement("div", { className: "lineage-years", key: "y" }, `${item.birthDate || "?"} — ${item.deathDate || "present"}`),
+                              React.createElement("div", { className: "muted", key: "p" }, item.birthPlace || "Birth place unknown"),
+                            ]),
+                          ];
+                          if (idx < lineageStripItems.length - 1) {
+                            pieces.push(React.createElement("span", { className: "lineage-link", key: `ln-${item.id}` }));
+                          }
+                          return pieces;
+                        })
+                      : [React.createElement("div", { className: "muted", key: "empty" }, "Timeline cards appear here after graph render.")]
+                  ),
+                ]),
                 React.createElement(GraphView, {
                   key: "graph",
                   subgraph,
@@ -1597,7 +1860,7 @@
 
             React.createElement("aside", { className: `sidebar ${rightOpen ? "" : "collapsed"}`, key: "right" }, [
               React.createElement("div", { className: "sidebar-head", key: "h" }, [
-                React.createElement("span", { key: "txt" }, "Collaboration & Context"),
+                React.createElement("span", { key: "txt" }, "Context & Collaboration"),
                 React.createElement("button", { className: "btn", key: "b", onClick: () => setRightOpen((v) => !v) }, rightOpen ? "▶" : "◀"),
               ]),
               rightOpen ? React.createElement("div", { className: "sidebar-body", key: "body" }, [
@@ -1701,7 +1964,7 @@
                 ]),
                 React.createElement("details", { className: "card", key: "places" }, [
                   React.createElement("summary", { key: "s" }, "Places & Migration"),
-                  React.createElement("form", { key: "f", onSubmit: (e) => addPersonPlace(e).catch((x) => setStatus(x.message)) }, [
+                  React.createElement("form", { className: "migration-panel", key: "f", onSubmit: (e) => addPersonPlace(e).catch((x) => setStatus(x.message)) }, [
                     React.createElement(
                       "select",
                       { key: "p", name: "person_id", value: selectedPersonId, onChange: (e) => setSelectedPersonId(e.target.value) },
@@ -1718,7 +1981,7 @@
                     React.createElement("button", { key: "b2", className: "ghost", type: "button", disabled: !selectedPersonId, onClick: () => loadMigrationGeojson(selectedPersonId).catch((x) => setStatus(x.message)) }, "Load Migration GeoJSON"),
                   ]),
                   React.createElement("div", { className: "muted", key: "sgm-head" }, "Subgraph Migration"),
-                  React.createElement("div", { style: { display: "grid", gap: "6px" }, key: "sgm-controls" }, [
+                  React.createElement("div", { className: "migration-panel", key: "sgm-controls" }, [
                     React.createElement("button", { key: "load", type: "button", className: "ghost", disabled: !lastRoot, onClick: () => loadSubgraphMigrationGeojson("").catch((x) => setStatus(x.message)) }, "Load Subgraph Migration"),
                     React.createElement("div", { className: "muted", key: "hint" }, subgraphMigrationDates.length ? `As of ${subgraphMigrationDates[subgraphMigrationIndex]}` : "Load migration to enable playback"),
                     React.createElement("input", {
@@ -1750,7 +2013,7 @@
                       )
                     : null,
                   subgraphMigrationGeoJson
-                    ? React.createElement("div", { key: "sgm-viz", style: { border: "1px solid #d7cfc2", borderRadius: "10px", padding: "8px", background: "#fbfcfd" } }, [
+                    ? React.createElement("div", { className: "migration-panel", key: "sgm-viz" }, [
                         React.createElement("div", { className: "muted", key: "sgm-viz-title", style: { marginBottom: "6px" } }, "Playback View (projected migration paths)"),
                         React.createElement("svg", { key: "sgm-svg", width: "100%", viewBox: `0 0 ${subgraphMigrationView.width} ${subgraphMigrationView.height}` }, [
                           React.createElement("rect", {
@@ -1828,6 +2091,7 @@
                           src: selectedPlace.lat != null && selectedPlace.lng != null
                             ? `https://maps.google.com/maps?q=${selectedPlace.lat},${selectedPlace.lng}&z=6&output=embed`
                             : `https://maps.google.com/maps?q=${encodeURIComponent(selectedPlace.place_name)}&z=6&output=embed`,
+                          className: "migration-map-frame",
                         }
                       )
                     : null,
