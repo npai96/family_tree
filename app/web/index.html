@@ -248,44 +248,89 @@
         border-radius: 999px;
         margin-right: 6px;
       }
-      .lineage-strip {
+      .lineage-journey {
         margin: 10px 12px 0;
-        padding: 14px;
+        padding: 16px 18px;
         border-radius: 18px;
         border: 1px solid var(--outline);
         background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(245, 243, 239, 0.78));
         box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
       }
-      .lineage-strip-head {
+      .lineage-journey-head {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        margin-bottom: 10px;
+        margin-bottom: 12px;
       }
-      .lineage-strip-title {
+      .lineage-journey-title {
         font-family: "Newsreader", Georgia, serif;
         font-size: 26px;
         color: var(--primary);
       }
-      .lineage-strip-track {
-        display: flex;
-        gap: 14px;
-        overflow-x: auto;
-        padding-bottom: 4px;
+      .lineage-journey-subtitle {
+        color: var(--muted);
+        font-style: italic;
+        font-size: 13px;
+        margin-bottom: 16px;
       }
-      .lineage-item {
-        min-width: 190px;
-        width: auto;
+      .lineage-journey-rail {
+        position: relative;
+        display: grid;
+        gap: 18px;
+      }
+      .lineage-journey-rail::before {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 0;
+        bottom: 0;
+        width: 1px;
+        background: rgba(196, 198, 205, 0.7);
+        transform: translateX(-50%);
+      }
+      .journey-row {
+        display: grid;
+        grid-template-columns: 1fr 40px 1fr;
+        gap: 10px;
+        align-items: center;
+      }
+      .journey-row.flip .journey-person {
+        grid-column: 3;
+      }
+      .journey-row.flip .journey-context {
+        grid-column: 1;
+        text-align: right;
+      }
+      .journey-center {
+        display: flex;
+        justify-content: center;
+      }
+      .journey-dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 999px;
+        background: var(--secondary);
+        border: 3px solid rgba(255, 255, 255, 0.95);
+        box-shadow: 0 0 0 1px rgba(196, 198, 205, 0.6);
+      }
+      .journey-person-card {
+        width: 100%;
         background: rgba(255, 255, 255, 0.92);
         border: 1px solid var(--outline);
         border-radius: 14px;
-        padding: 10px 12px;
+        padding: 12px;
         margin-bottom: 0;
         text-align: left;
+        box-shadow: 0 14px 30px rgba(27, 28, 26, 0.06);
+      }
+      .journey-person-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
       }
       .lineage-name {
         font-family: "Newsreader", Georgia, serif;
-        font-size: 22px;
+        font-size: 24px;
         color: #20304a;
         line-height: 1.1;
       }
@@ -300,6 +345,28 @@
         min-width: 28px;
         height: 2px;
         background: rgba(160, 65, 0, 0.45);
+      }
+      .journey-chip {
+        align-self: start;
+        display: inline-block;
+        border-radius: 999px;
+        padding: 3px 8px;
+        background: var(--secondary-fixed);
+        color: #7a3000;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+      }
+      .journey-context {
+        color: #6a7888;
+        font-size: 12px;
+      }
+      .journey-context-label {
+        font-size: 10px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #9aa3ad;
+        margin-bottom: 5px;
       }
       .migration-panel {
         display: grid;
@@ -320,6 +387,13 @@
         .sidebar { max-height: 380px; }
         .graph-wrap { height: 70vh; }
         .title { font-size: 28px; }
+        .lineage-journey-rail::before { left: 16px; transform: none; }
+        .journey-row { grid-template-columns: 32px 1fr; }
+        .journey-person, .journey-context, .journey-row.flip .journey-person, .journey-row.flip .journey-context {
+          grid-column: 2;
+          text-align: left;
+        }
+        .journey-center { grid-column: 1; }
       }
     </style>
   </head>
@@ -378,8 +452,8 @@
 
         const cols = Object.keys(groups).map(Number).sort((a, b) => a - b);
         const pos = {};
-        const colGap = 260;
-        const rowGap = 120;
+        const colGap = 340;
+        const rowGap = 210;
         cols.forEach((c) => {
           groups[c].forEach((node, i) => {
             pos[node.id] = { x: 170 + c * colGap, y: 100 + i * rowGap };
@@ -447,6 +521,10 @@
         const names = {};
         nodes.forEach((n) => { names[n.id] = n.full_name; });
         const { undirectedTypes, displayEdges } = normalizeDisplayEdges(edges);
+        const NODE_W = 236;
+        const NODE_H = 132;
+        const NODE_HALF_W = NODE_W / 2;
+        const NODE_HALF_H = NODE_H / 2;
 
         useEffect(() => {
           if (!hasData || !svgRef.current || typeof d3 === "undefined") return;
@@ -532,19 +610,20 @@
               if (isPrimarilyVertical) {
                 const fromDown = to.y >= from.y;
                 startX = from.x + laneOffset + sourceSpread;
-                startY = from.y + (fromDown ? 52 : 0);
+                startY = from.y + (fromDown ? NODE_H : 0);
                 endX = to.x + laneOffset + targetSpread;
-                endY = to.y + (fromDown ? 0 : 52);
+                endY = to.y + (fromDown ? 0 : NODE_H);
                 const controlDeltaY = Math.max(36, Math.abs(endY - startY) * 0.35);
                 control1X = startX;
                 control1Y = startY + (fromDown ? controlDeltaY : -controlDeltaY);
                 control2X = endX;
                 control2Y = endY - (fromDown ? controlDeltaY : -controlDeltaY);
               } else {
-                startX = from.x + 92;
-                startY = from.y + 26 + laneOffset + sourceSpread;
-                endX = to.x - 92;
-                endY = to.y + 26 + laneOffset + targetSpread;
+                const leftToRight = to.x >= from.x;
+                startX = from.x + (leftToRight ? NODE_HALF_W : -NODE_HALF_W);
+                startY = from.y + NODE_HALF_H + laneOffset + sourceSpread;
+                endX = to.x + (leftToRight ? -NODE_HALF_W : NODE_HALF_W);
+                endY = to.y + NODE_HALF_H + laneOffset + targetSpread;
                 const horizontalSpan = Math.abs(endX - startX);
                 if (horizontalSpan < 44) {
                   const bulge = 54 + Math.abs(laneOffset) * 1.2;
@@ -633,25 +712,95 @@
               const fill = isRoot ? "var(--accent)" : isSelected ? "#fde7c4" : isHighlighted ? "#f8eee1" : "#ffffff";
               const stroke = isRoot ? "var(--accent)" : isSelected ? "#c98a39" : isHighlighted ? "#d7b07b" : "#9eb1bf";
               const textColor = isRoot ? "#ffffff" : "#2b3641";
+              const subtitleColor = isRoot ? "rgba(255,255,255,0.85)" : "#6a7988";
+              const name = names[node.id] || node.id.slice(0, 8);
+              const words = name.split(/\s+/).filter(Boolean);
+              const line1 = words.slice(0, 2).join(" ");
+              const line2 = words.slice(2, 4).join(" ");
+              const years = `${node.birth_date || "?"} — ${node.death_date || "present"}`;
+              const badge = (node.occupation || node.religion || "ancestor").slice(0, 20);
               const g = nodeLayer.append("g").style("cursor", "pointer").datum(node);
               g.append("rect")
-                .attr("x", p.x - 92)
+                .attr("x", p.x - NODE_HALF_W)
                 .attr("y", p.y)
-                .attr("width", 184)
-                .attr("height", 52)
-                .attr("rx", 18)
+                .attr("width", NODE_W)
+                .attr("height", NODE_H)
+                .attr("rx", 20)
                 .attr("fill", fill)
                 .attr("stroke", stroke)
                 .attr("stroke-width", isSelected ? 3 : 2);
+              g.append("rect")
+                .attr("x", p.x - NODE_HALF_W + 12)
+                .attr("y", p.y + 14)
+                .attr("width", 56)
+                .attr("height", 74)
+                .attr("rx", 8)
+                .attr("fill", isRoot ? "rgba(255,255,255,0.2)" : "#d5d2cc")
+                .attr("stroke", isRoot ? "rgba(255,255,255,0.35)" : "#c4c6cd")
+                .attr("stroke-width", 1);
               g.append("text")
-                .attr("x", p.x)
-                .attr("y", p.y + 31)
+                .attr("x", p.x - NODE_HALF_W + 40)
+                .attr("y", p.y + 58)
                 .attr("text-anchor", "middle")
-                .attr("font-size", 16)
+                .attr("font-size", 11)
                 .attr("font-family", "Manrope, sans-serif")
-                .attr("font-weight", 650)
+                .attr("font-weight", 700)
+                .attr("fill", isRoot ? "rgba(255,255,255,0.88)" : "#5c6a79")
+                .text("Portrait");
+              g.append("text")
+                .attr("x", p.x - NODE_HALF_W + 80)
+                .attr("y", p.y + 36)
+                .attr("text-anchor", "start")
+                .attr("font-size", 29)
+                .attr("font-family", "Newsreader, Georgia, serif")
+                .attr("font-weight", 700)
                 .attr("fill", textColor)
-                .text(names[node.id] || node.id.slice(0, 8));
+                .text(line1);
+              if (line2) {
+                g.append("text")
+                  .attr("x", p.x - NODE_HALF_W + 80)
+                  .attr("y", p.y + 62)
+                  .attr("text-anchor", "start")
+                  .attr("font-size", 24)
+                  .attr("font-family", "Newsreader, Georgia, serif")
+                  .attr("font-weight", 600)
+                  .attr("fill", textColor)
+                  .text(line2);
+              }
+              g.append("text")
+                .attr("x", p.x - NODE_HALF_W + 80)
+                .attr("y", p.y + 84)
+                .attr("text-anchor", "start")
+                .attr("font-size", 12)
+                .attr("font-family", "Manrope, sans-serif")
+                .attr("font-weight", 700)
+                .attr("fill", subtitleColor)
+                .text(years);
+              g.append("text")
+                .attr("x", p.x - NODE_HALF_W + 80)
+                .attr("y", p.y + 104)
+                .attr("text-anchor", "start")
+                .attr("font-size", 11)
+                .attr("font-family", "Manrope, sans-serif")
+                .attr("fill", subtitleColor)
+                .text((node.birth_place || "Birthplace unknown").slice(0, 30));
+              const badgeW = Math.max(48, Math.min(96, badge.length * 6 + 16));
+              g.append("rect")
+                .attr("x", p.x + NODE_HALF_W - badgeW - 12)
+                .attr("y", p.y + 12)
+                .attr("width", badgeW)
+                .attr("height", 18)
+                .attr("rx", 10)
+                .attr("fill", isRoot ? "rgba(255, 219, 204, 0.25)" : "rgba(255, 219, 204, 0.75)");
+              g.append("text")
+                .attr("x", p.x + NODE_HALF_W - badgeW / 2 - 12)
+                .attr("y", p.y + 25)
+                .attr("text-anchor", "middle")
+                .attr("font-size", 10)
+                .attr("font-family", "Manrope, sans-serif")
+                .attr("font-weight", 700)
+                .attr("fill", isRoot ? "rgba(255,255,255,0.9)" : "#7a3000")
+                .text(badge);
               g.on("click", () => onNodeClick(node.id));
             });
           }
@@ -817,18 +966,26 @@
           }).filter((l) => l.d);
           return { points: projectedPoints, lines: projectedLines, width, height };
         }, [subgraphMigrationGeoJson]);
-        const lineageStripItems = useMemo(() => {
+        const lineageJourneyItems = useMemo(() => {
           const rows = (subgraph?.persons || []).map((p) => ({
             id: p.id,
             name: p.full_name || p.id.slice(0, 8),
             birthDate: p.birth_date || "",
             deathDate: p.death_date || "",
             birthPlace: p.birth_place || "",
+            badge: p.occupation || p.religion || "Ancestor",
+            worldEvents: (contextEvents || [])
+              .filter((evt) => {
+                const year = (p.birth_date || p.death_date || "").slice(0, 4);
+                return year && (evt.date || "").startsWith(year);
+              })
+              .slice(0, 2)
+              .map((evt) => evt.title),
             sortDate: p.birth_date || p.death_date || "9999-12-31",
           }));
           rows.sort((a, b) => a.sortDate.localeCompare(b.sortDate) || a.name.localeCompare(b.name));
           return rows.slice(0, 12);
-        }, [subgraph]);
+        }, [subgraph, contextEvents]);
 
         function setActiveUser(id) {
           if (id !== activeUserId && authToken) {
@@ -1816,34 +1973,42 @@
                     ])
                   ])
                 ]),
-                React.createElement("section", { className: "lineage-strip", key: "lineage-strip" }, [
-                  React.createElement("div", { className: "lineage-strip-head", key: "h" }, [
-                    React.createElement("div", { className: "lineage-strip-title", key: "t" }, "Lineage Journey"),
-                    React.createElement("div", { className: "muted", key: "m" }, lineageStripItems.length ? `${lineageStripItems.length} profiles` : "Render a graph to build timeline"),
+                React.createElement("section", { className: "lineage-journey", key: "lineage-journey" }, [
+                  React.createElement("div", { className: "lineage-journey-head", key: "h" }, [
+                    React.createElement("div", { className: "lineage-journey-title", key: "t" }, "Lineage Journey"),
+                    React.createElement("div", { className: "muted", key: "m" }, lineageJourneyItems.length ? `${lineageJourneyItems.length} profiles` : "Render a graph to build timeline"),
                   ]),
-                  React.createElement("div", { className: "lineage-strip-track", key: "trk" },
-                    lineageStripItems.length
-                      ? lineageStripItems.flatMap((item, idx) => {
-                          const pieces = [
-                            React.createElement("button", {
-                              key: `card-${item.id}`,
-                              type: "button",
-                              className: "lineage-item",
-                              onMouseDown: (e) => e.preventDefault(),
-                              onClick: () => applyPersonFocus(item.id),
-                            }, [
-                              React.createElement("div", { className: "lineage-name", key: "n" }, item.name),
-                              React.createElement("div", { className: "lineage-years", key: "y" }, `${item.birthDate || "?"} — ${item.deathDate || "present"}`),
-                              React.createElement("div", { className: "muted", key: "p" }, item.birthPlace || "Birth place unknown"),
+                  React.createElement("div", { className: "lineage-journey-subtitle", key: "sub" }, "Tracing roots from earliest known ancestors through defining world events."),
+                  React.createElement("div", { className: "lineage-journey-rail", key: "trk" },
+                    lineageJourneyItems.length
+                      ? lineageJourneyItems.map((item, idx) =>
+                          React.createElement("div", { className: `journey-row ${idx % 2 ? "flip" : ""}`, key: item.id }, [
+                            React.createElement("div", { className: "journey-person", key: "p" },
+                              React.createElement("button", {
+                                type: "button",
+                                className: "journey-person-card",
+                                onMouseDown: (e) => e.preventDefault(),
+                                onClick: () => applyPersonFocus(item.id),
+                              }, [
+                                React.createElement("div", { className: "journey-person-head", key: "ph" }, [
+                                  React.createElement("div", { className: "lineage-name", key: "n" }, item.name),
+                                  React.createElement("span", { className: "journey-chip", key: "c" }, item.badge),
+                                ]),
+                                React.createElement("div", { className: "lineage-years", key: "y" }, `${item.birthDate || "?"} — ${item.deathDate || "present"}`),
+                                React.createElement("div", { className: "muted", key: "bp" }, item.birthPlace || "Birthplace unknown"),
+                              ])
+                            ),
+                            React.createElement("div", { className: "journey-center", key: "d" }, React.createElement("span", { className: "journey-dot" })),
+                            React.createElement("div", { className: "journey-context", key: "ctx" }, [
+                              React.createElement("div", { className: "journey-context-label", key: "lbl" }, `World Events • ${(item.birthDate || item.deathDate || "").slice(0, 4) || "Era"}`),
+                              ...(item.worldEvents.length
+                                ? item.worldEvents.map((evt, i) => React.createElement("div", { key: `e-${i}` }, `• ${evt}`))
+                                : [React.createElement("div", { className: "muted", key: "none" }, "No mapped world events for this year.")]),
                             ]),
-                          ];
-                          if (idx < lineageStripItems.length - 1) {
-                            pieces.push(React.createElement("span", { className: "lineage-link", key: `ln-${item.id}` }));
-                          }
-                          return pieces;
-                        })
-                      : [React.createElement("div", { className: "muted", key: "empty" }, "Timeline cards appear here after graph render.")]
-                  ),
+                          ])
+                        )
+                      : [React.createElement("div", { className: "muted", key: "empty" }, "Timeline entries appear here after graph render.")]
+                  )
                 ]),
                 React.createElement(GraphView, {
                   key: "graph",
