@@ -1938,12 +1938,16 @@ def download_media(
     circle_id: str,
     asset_id: str,
     user_id: Optional[str] = Query(default=None),
+    token: Optional[str] = Query(default=None),
     x_user_id: Optional[str] = Header(default=None),
     authorization: Optional[str] = Header(default=None),
 ) -> FileResponse:
     auth_user_id = x_user_id or user_id
+    auth_header = authorization
+    if not auth_header and token:
+        auth_header = f"Bearer {token}"
     with get_conn() as conn:
-        actor_user_id = _require_authenticated_user(conn, auth_user_id, authorization)
+        actor_user_id = _require_authenticated_user(conn, auth_user_id, auth_header)
         _get_role(conn, circle_id, actor_user_id)
         row = conn.execute(
             "SELECT * FROM media_assets WHERE id = ? AND circle_id = ?",

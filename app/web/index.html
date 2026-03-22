@@ -382,6 +382,107 @@
         margin-top: 8px;
         box-shadow: 0 10px 24px rgba(27, 28, 26, 0.06);
       }
+      .time-aligned-shell {
+        display: grid;
+        grid-template-columns: 320px 1fr;
+        gap: 14px;
+        padding: 10px 12px 0;
+      }
+      .historical-panel {
+        border: 1px solid var(--outline);
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.9);
+        box-shadow: 0 12px 28px rgba(27, 28, 26, 0.05);
+        overflow: hidden;
+      }
+      .historical-panel-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 12px 14px;
+        background: rgba(245, 243, 239, 0.9);
+        border-bottom: 1px solid var(--outline);
+      }
+      .historical-panel-title {
+        font-family: "Newsreader", Georgia, serif;
+        font-size: 34px;
+        line-height: 1;
+        color: var(--secondary);
+        font-style: italic;
+      }
+      .historical-list {
+        max-height: 74vh;
+        overflow: auto;
+        padding: 8px 10px 14px;
+      }
+      .historical-item {
+        position: relative;
+        padding: 2px 10px 14px 26px;
+        margin-bottom: 6px;
+      }
+      .historical-item::before {
+        content: "";
+        position: absolute;
+        left: 5px;
+        top: 20px;
+        bottom: -10px;
+        width: 1px;
+        background: rgba(160, 65, 0, 0.25);
+      }
+      .historical-item:last-child::before {
+        bottom: 20px;
+      }
+      .historical-dot {
+        position: absolute;
+        left: 0;
+        top: 18px;
+        width: 11px;
+        height: 11px;
+        border-radius: 999px;
+        background: var(--secondary);
+      }
+      .historical-year {
+        font-weight: 800;
+        font-size: 25px;
+        color: #202633;
+      }
+      .historical-event {
+        font-family: "Newsreader", Georgia, serif;
+        font-size: 34px;
+        line-height: 1.08;
+        color: var(--primary);
+        margin: 3px 0 6px;
+      }
+      .historical-desc {
+        color: #697583;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+      .historical-media {
+        margin-top: 8px;
+        height: 118px;
+        border-radius: 12px;
+        border: 1px solid rgba(160, 65, 0, 0.16);
+        background:
+          linear-gradient(145deg, rgba(16, 26, 112, 0.08), rgba(160, 65, 0, 0.1)),
+          radial-gradient(circle at 20% 20%, rgba(255, 255, 255, 0.6), transparent 45%);
+        display: flex;
+        align-items: flex-end;
+        padding: 10px;
+      }
+      .historical-media-tag {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #7a3000;
+        background: rgba(255, 219, 204, 0.78);
+        border-radius: 999px;
+        padding: 4px 8px;
+      }
+      .time-graph-stage {
+        min-width: 0;
+      }
       @media (max-width: 1100px) {
         .shell { grid-template-columns: 1fr !important; height: auto; }
         .sidebar { max-height: 380px; }
@@ -394,6 +495,7 @@
           text-align: left;
         }
         .journey-center { grid-column: 1; }
+        .time-aligned-shell { grid-template-columns: 1fr; }
       }
     </style>
   </head>
@@ -418,17 +520,18 @@
         return `${fromId}->${toId}`;
       }
 
-      function computeLayout(subgraph, rootPersonId) {
-        const nodes = subgraph?.persons || [];
-        const edges = subgraph?.relationships || [];
-        if (!nodes.length) return { width: 1000, height: 600, pos: {}, nodes, edges };
+      function parseYear(dateStr) {
+        if (!dateStr || typeof dateStr !== "string") return null;
+        const n = Number(dateStr.slice(0, 4));
+        return Number.isFinite(n) && n > 0 ? n : null;
+      }
 
+      function computeLevelMap(nodes, edges, rootPersonId) {
         const outgoing = {};
         edges.forEach((e) => {
           if (!outgoing[e.from_person_id]) outgoing[e.from_person_id] = [];
           outgoing[e.from_person_id].push(e.to_person_id);
         });
-
         const level = {};
         if (rootPersonId) level[rootPersonId] = 0;
         const q = rootPersonId ? [[rootPersonId, 0]] : [];
@@ -441,30 +544,526 @@
             }
           });
         }
-        nodes.forEach((n) => { if (level[n.id] === undefined) level[n.id] = 0; });
-
-        const groups = {};
         nodes.forEach((n) => {
-          const d = level[n.id];
-          if (!groups[d]) groups[d] = [];
-          groups[d].push(n);
+          if (level[n.id] === undefined) level[n.id] = 0;
+        });
+        return level;
+      }
+
+      function computeLayout(subgraph, rootPersonId) {
+        const nodes = subgraph?.persons || [];
+        const edges = subgraph?.relationships || [];
+        if (!nodes.length) return { width: 1000, height: 600, pos: {}, nodes, edges, layoutMeta: {} };
+        const NODE_H = 132;
+        const NODE_W = 236;
+        const byId = {};
+        nodes.forEach((n) => { byId[n.id] = n; });
+        const parentEdges = normalizeParentEdges(edges).filter(([p, c]) => byId[p] && byId[c]);
+        const parentChoices = {};
+        const parentsByChild = {};
+        const childrenByParent = {};
+        parentEdges.forEach(([p, c]) => {
+          if (!parentsByChild[c]) parentsByChild[c] = [];
+          parentsByChild[c].push(p);
+        });
+        Object.entries(parentsByChild).forEach(([childId, parents]) => {
+          const sorted = parents.slice().sort((a, b) => {
+            const an = (byId[a].full_name || "").toLowerCase();
+            const bn = (byId[b].full_name || "").toLowerCase();
+            return an.localeCompare(bn) || a.localeCompare(b);
+          });
+          parentChoices[childId] = sorted[0];
+        });
+        Object.entries(parentChoices).forEach(([c, p]) => {
+          if (!childrenByParent[p]) childrenByParent[p] = [];
+          childrenByParent[p].push(c);
         });
 
-        const cols = Object.keys(groups).map(Number).sort((a, b) => a - b);
+        const leftPad = 180;
+        const topPad = 96;
+        const xGap = 296;
+        const rowGap = 228;
+        const depth = {};
+        const assigned = new Set();
+        const roots = nodes
+          .filter((n) => !parentChoices[n.id])
+          .map((n) => n.id)
+          .sort((a, b) => (byId[a].full_name || "").localeCompare(byId[b].full_name || "") || a.localeCompare(b));
+        if (rootPersonId && roots.includes(rootPersonId)) {
+          roots.splice(roots.indexOf(rootPersonId), 1);
+          roots.unshift(rootPersonId);
+        }
+        let xCursor = 0;
+        function place(id, d) {
+          if (assigned.has(id)) return xCursor;
+          assigned.add(id);
+          depth[id] = d;
+          const children = (childrenByParent[id] || []).slice().sort((a, b) => {
+            const an = (byId[a].full_name || "").toLowerCase();
+            const bn = (byId[b].full_name || "").toLowerCase();
+            return an.localeCompare(bn) || a.localeCompare(b);
+          });
+          if (!children.length) {
+            const slot = xCursor;
+            xCursor += 1;
+            return slot;
+          }
+          const childSlots = children.map((c) => place(c, d + 1));
+          return (Math.min(...childSlots) + Math.max(...childSlots)) / 2;
+        }
+        const rootSlots = {};
+        roots.forEach((r) => { rootSlots[r] = place(r, 0); });
+        nodes.forEach((n) => {
+          if (!assigned.has(n.id)) rootSlots[n.id] = place(n.id, 0);
+        });
+
         const pos = {};
-        const colGap = 340;
-        const rowGap = 210;
-        cols.forEach((c) => {
-          groups[c].forEach((node, i) => {
-            pos[node.id] = { x: 170 + c * colGap, y: 100 + i * rowGap };
+        nodes.forEach((n) => {
+          const slot = Object.prototype.hasOwnProperty.call(rootSlots, n.id) ? rootSlots[n.id] : 0;
+          const x = leftPad + slot * xGap;
+          const y = topPad + (depth[n.id] || 0) * rowGap;
+          pos[n.id] = { x, y };
+        });
+
+        const kinByNode = {};
+        const spouseByNode = {};
+        const lateralTypes = new Set(["sibling_of", "cousin_of", "spouse_of", "partner_of"]);
+        edges.forEach((edge) => {
+          let fromId = edge.from_person_id;
+          let toId = edge.to_person_id;
+          let relType = edge.relationship_type;
+          if (relType === "child_of") {
+            fromId = edge.to_person_id;
+            toId = edge.from_person_id;
+            relType = "parent_of";
+          } else if (relType === "niece_nephew_of") {
+            fromId = edge.to_person_id;
+            toId = edge.from_person_id;
+            relType = "aunt_uncle_of";
+          }
+          if (!lateralTypes.has(relType)) return;
+          if (relType === "sibling_of" || relType === "cousin_of") {
+            if (!kinByNode[fromId]) kinByNode[fromId] = new Set();
+            if (!kinByNode[toId]) kinByNode[toId] = new Set();
+            kinByNode[fromId].add(toId);
+            kinByNode[toId].add(fromId);
+          }
+          if (relType === "spouse_of" || relType === "partner_of") {
+            if (!spouseByNode[fromId]) spouseByNode[fromId] = new Set();
+            if (!spouseByNode[toId]) spouseByNode[toId] = new Set();
+            spouseByNode[fromId].add(toId);
+            spouseByNode[toId].add(fromId);
+          }
+        });
+        const rowsByDepth = {};
+        nodes.forEach((n) => {
+          const d = depth[n.id] || 0;
+          if (!rowsByDepth[d]) rowsByDepth[d] = [];
+          rowsByDepth[d].push(n.id);
+        });
+        Object.values(rowsByDepth).forEach((rowNodeIds) => {
+          if (rowNodeIds.length < 2) return;
+          const rowSet = new Set(rowNodeIds);
+          const sorted = rowNodeIds.slice().sort((a, b) => {
+            const ax = pos[a].x;
+            const bx = pos[b].x;
+            const aKin = (kinByNode[a] && Array.from(kinByNode[a]).some((id) => rowSet.has(id))) ? 1 : 0;
+            const bKin = (kinByNode[b] && Array.from(kinByNode[b]).some((id) => rowSet.has(id))) ? 1 : 0;
+            const aSpouseOnly = !aKin && (spouseByNode[a] && Array.from(spouseByNode[a]).some((id) => rowSet.has(id))) ? 1 : 0;
+            const bSpouseOnly = !bKin && (spouseByNode[b] && Array.from(spouseByNode[b]).some((id) => rowSet.has(id))) ? 1 : 0;
+            const aRole = aKin ? 0 : (aSpouseOnly ? 2 : 1);
+            const bRole = bKin ? 0 : (bSpouseOnly ? 2 : 1);
+            if (aRole !== bRole) return aRole - bRole;
+            return ax - bx;
+          });
+          const center = sorted.reduce((sum, id) => sum + pos[id].x, 0) / sorted.length;
+          const start = center - ((sorted.length - 1) * xGap) / 2;
+          sorted.forEach((id, i) => {
+            pos[id].x = start + i * xGap;
           });
         });
 
-        const maxCol = cols.length ? Math.max(...cols) : 0;
-        const maxRows = Math.max(1, ...Object.values(groups).map((g) => g.length));
-        const width = 360 + (maxCol + 1) * colGap;
-        const height = 260 + maxRows * rowGap;
-        return { width, height, pos, nodes, edges };
+        Object.entries(parentsByChild).forEach(([childId, parentIds]) => {
+          if (!pos[childId] || !Array.isArray(parentIds) || parentIds.length < 2) return;
+          const parentPos = parentIds.map((id) => pos[id]).filter(Boolean);
+          if (parentPos.length < 2) return;
+          pos[childId].x = parentPos.reduce((sum, p) => sum + p.x, 0) / parentPos.length;
+        });
+
+        Object.values(rowsByDepth).forEach((rowNodeIds) => {
+          if (rowNodeIds.length < 2) return;
+          const sorted = rowNodeIds.slice().sort((a, b) => pos[a].x - pos[b].x);
+          const originalCenter = sorted.reduce((sum, id) => sum + pos[id].x, 0) / sorted.length;
+          const minGap = 256;
+          for (let i = 1; i < sorted.length; i += 1) {
+            const prev = sorted[i - 1];
+            const cur = sorted[i];
+            const gap = pos[cur].x - pos[prev].x;
+            if (gap < minGap) {
+              pos[cur].x = pos[prev].x + minGap;
+            }
+          }
+          const newCenter = sorted.reduce((sum, id) => sum + pos[id].x, 0) / sorted.length;
+          const shift = originalCenter - newCenter;
+          sorted.forEach((id) => {
+            pos[id].x += shift;
+          });
+        });
+
+        const maxDepth = Math.max(0, ...Object.values(depth));
+        const nodeXs = Object.values(pos).map((p) => p.x);
+        const minX = Math.min(...nodeXs);
+        const maxX = Math.max(...nodeXs);
+        const xShift = Math.max(0, 140 - minX);
+        if (xShift > 0) {
+          Object.keys(pos).forEach((id) => {
+            pos[id].x += xShift;
+          });
+        }
+        const shiftedMaxX = Math.max(...Object.values(pos).map((p) => p.x));
+        const width = Math.max(1180, shiftedMaxX + NODE_W / 2 + 140);
+        const height = Math.max(760, topPad * 2 + (maxDepth + 1) * rowGap + NODE_H);
+        return { width, height, pos, nodes, edges, layoutMeta: { level: depth } };
+      }
+
+      function computeGenerationMap(nodes, edges, rootPersonId) {
+        const parentPairs = [];
+        const lateralPairs = [];
+        edges.forEach((e) => {
+          let fromId = e.from_person_id;
+          let toId = e.to_person_id;
+          let relType = e.relationship_type;
+          if (relType === "child_of") {
+            fromId = e.to_person_id;
+            toId = e.from_person_id;
+            relType = "parent_of";
+          } else if (relType === "niece_nephew_of") {
+            fromId = e.to_person_id;
+            toId = e.from_person_id;
+            relType = "aunt_uncle_of";
+          }
+          if (relType === "parent_of") {
+            parentPairs.push([fromId, toId]); // parent -> child
+          } else if (relType === "spouse_of" || relType === "sibling_of" || relType === "cousin_of" || relType === "partner_of") {
+            lateralPairs.push([fromId, toId]); // same generation
+          }
+        });
+        const parentsByChild = {};
+        const childrenByParent = {};
+        parentPairs.forEach(([p, c]) => {
+          if (!parentsByChild[c]) parentsByChild[c] = [];
+          if (!childrenByParent[p]) childrenByParent[p] = [];
+          parentsByChild[c].push(p);
+          childrenByParent[p].push(c);
+        });
+        const lateral = {};
+        lateralPairs.forEach(([a, b]) => {
+          if (!lateral[a]) lateral[a] = [];
+          if (!lateral[b]) lateral[b] = [];
+          lateral[a].push(b);
+          lateral[b].push(a);
+        });
+
+        const gen = {};
+        if (rootPersonId) gen[rootPersonId] = 0;
+        const q = rootPersonId ? [rootPersonId] : [];
+        while (q.length) {
+          const cur = q.shift();
+          const g = gen[cur] || 0;
+          (parentsByChild[cur] || []).forEach((p) => {
+            if (gen[p] === undefined) {
+              gen[p] = g - 1;
+              q.push(p);
+            }
+          });
+          (childrenByParent[cur] || []).forEach((c) => {
+            if (gen[c] === undefined) {
+              gen[c] = g + 1;
+              q.push(c);
+            }
+          });
+          (lateral[cur] || []).forEach((n) => {
+            if (gen[n] === undefined) {
+              gen[n] = g;
+              q.push(n);
+            }
+          });
+        }
+        nodes.forEach((n) => {
+          if (gen[n.id] === undefined) gen[n.id] = 0;
+        });
+        return gen;
+      }
+
+      function normalizeParentEdges(edges) {
+        const rows = [];
+        (edges || []).forEach((e) => {
+          let from = e.from_person_id;
+          let to = e.to_person_id;
+          let t = e.relationship_type;
+          if (t === "child_of") {
+            from = e.to_person_id;
+            to = e.from_person_id;
+            t = "parent_of";
+          }
+          if (t === "parent_of") rows.push([from, to]);
+        });
+        return rows;
+      }
+
+      function computeTimeAlignedLayout(subgraph, rootPersonId, contextEvents) {
+        const nodes = subgraph?.persons || [];
+        const edges = subgraph?.relationships || [];
+        if (!nodes.length) return { width: 1100, height: 760, pos: {}, nodes, edges, layoutMeta: {} };
+        const NODE_H = 132;
+        const NODE_W = 236;
+        const byId = {};
+        nodes.forEach((n) => { byId[n.id] = n; });
+        const parentEdges = normalizeParentEdges(edges).filter(([p, c]) => byId[p] && byId[c]);
+        const parentChoices = {};
+        const parentsByChild = {};
+        const childrenByParent = {};
+        parentEdges.forEach(([p, c]) => {
+          if (!parentsByChild[c]) parentsByChild[c] = [];
+          parentsByChild[c].push(p);
+        });
+        Object.entries(parentsByChild).forEach(([childId, parents]) => {
+          const sorted = parents.slice().sort((a, b) => a.localeCompare(b));
+          parentChoices[childId] = sorted[0];
+        });
+        Object.entries(parentChoices).forEach(([c, p]) => {
+          if (!childrenByParent[p]) childrenByParent[p] = [];
+          childrenByParent[p].push(c);
+        });
+
+        const nodeYears = {};
+        nodes.forEach((n) => {
+          nodeYears[n.id] = parseYear(n.birth_date) || parseYear(n.death_date);
+        });
+        const eventRows = (contextEvents || [])
+          .map((evt) => ({ ...evt, year: parseYear(evt.date) }))
+          .filter((evt) => evt.year != null)
+          .sort((a, b) => a.year - b.year);
+        const allYears = Object.values(nodeYears).filter((y) => y != null).concat(eventRows.map((e) => e.year));
+        const minYear = allYears.length ? Math.min(...allYears) : 1850;
+        const maxYear = allYears.length ? Math.max(...allYears) : minYear + 40;
+        const spanYears = Math.max(1, maxYear - minYear);
+
+        const rowGap = 228;
+        const xGap = 278;
+        const leftPad = 180;
+        const topPad = 72;
+        const pos = {};
+        const depth = {};
+        const assigned = new Set();
+        const roots = nodes
+          .filter((n) => !parentChoices[n.id])
+          .map((n) => n.id)
+          .sort((a, b) => {
+            const ay = nodeYears[a] ?? 9999;
+            const by = nodeYears[b] ?? 9999;
+            return ay - by || (byId[a].full_name || "").localeCompare(byId[b].full_name || "");
+          });
+        if (rootPersonId && roots.includes(rootPersonId)) {
+          roots.splice(roots.indexOf(rootPersonId), 1);
+          roots.unshift(rootPersonId);
+        }
+        let xCursor = 0;
+        function place(id, d) {
+          if (assigned.has(id)) return xCursor;
+          assigned.add(id);
+          depth[id] = d;
+          const children = (childrenByParent[id] || []).slice().sort((a, b) => {
+            const ay = nodeYears[a] ?? 9999;
+            const by = nodeYears[b] ?? 9999;
+            return ay - by || (byId[a].full_name || "").localeCompare(byId[b].full_name || "");
+          });
+          if (!children.length) {
+            const slot = xCursor;
+            xCursor += 1;
+            return slot;
+          }
+          const childSlots = children.map((c) => place(c, d + 1));
+          return (Math.min(...childSlots) + Math.max(...childSlots)) / 2;
+        }
+        const rootSlots = {};
+        roots.forEach((r) => { rootSlots[r] = place(r, 0); });
+        nodes.forEach((n) => {
+          if (!assigned.has(n.id)) {
+            rootSlots[n.id] = place(n.id, 0);
+          }
+        });
+        const maxDepth = Math.max(0, ...Object.values(depth));
+        const jitterForYear = (id) => {
+          const y = nodeYears[id];
+          if (y == null) return 0;
+          const ratio = (y - minYear) / spanYears;
+          return (ratio - 0.5) * 30;
+        };
+        nodes.forEach((n) => {
+          const slot = Object.prototype.hasOwnProperty.call(rootSlots, n.id) ? rootSlots[n.id] : 0;
+          const x = leftPad + slot * xGap;
+          const baseY = topPad + (depth[n.id] || 0) * rowGap;
+          pos[n.id] = { x, y: baseY + jitterForYear(n.id) };
+        });
+
+        const lateralByNode = {};
+        const kinByNode = {};
+        const spouseByNode = {};
+        const lateralTypes = new Set(["sibling_of", "cousin_of", "spouse_of", "partner_of"]);
+        edges.forEach((edge) => {
+          let fromId = edge.from_person_id;
+          let toId = edge.to_person_id;
+          let relType = edge.relationship_type;
+          if (relType === "child_of") {
+            fromId = edge.to_person_id;
+            toId = edge.from_person_id;
+            relType = "parent_of";
+          } else if (relType === "niece_nephew_of") {
+            fromId = edge.to_person_id;
+            toId = edge.from_person_id;
+            relType = "aunt_uncle_of";
+          }
+          if (!lateralTypes.has(relType)) return;
+          if (!lateralByNode[fromId]) lateralByNode[fromId] = [];
+          if (!lateralByNode[toId]) lateralByNode[toId] = [];
+          lateralByNode[fromId].push({ id: toId, type: relType });
+          lateralByNode[toId].push({ id: fromId, type: relType });
+          if (relType === "sibling_of" || relType === "cousin_of") {
+            if (!kinByNode[fromId]) kinByNode[fromId] = new Set();
+            if (!kinByNode[toId]) kinByNode[toId] = new Set();
+            kinByNode[fromId].add(toId);
+            kinByNode[toId].add(fromId);
+          }
+          if (relType === "spouse_of" || relType === "partner_of") {
+            if (!spouseByNode[fromId]) spouseByNode[fromId] = new Set();
+            if (!spouseByNode[toId]) spouseByNode[toId] = new Set();
+            spouseByNode[fromId].add(toId);
+            spouseByNode[toId].add(fromId);
+          }
+        });
+
+        const rowsByDepth = {};
+        nodes.forEach((n) => {
+          const d = depth[n.id] || 0;
+          if (!rowsByDepth[d]) rowsByDepth[d] = [];
+          rowsByDepth[d].push(n.id);
+        });
+        Object.values(rowsByDepth).forEach((rowNodeIds) => {
+          if (rowNodeIds.length < 2) return;
+          const rowSet = new Set(rowNodeIds);
+          const sorted = rowNodeIds.slice().sort((a, b) => {
+            const ax = pos[a].x;
+            const bx = pos[b].x;
+            const aKin = (kinByNode[a] && Array.from(kinByNode[a]).some((id) => rowSet.has(id))) ? 1 : 0;
+            const bKin = (kinByNode[b] && Array.from(kinByNode[b]).some((id) => rowSet.has(id))) ? 1 : 0;
+            const aSpouseOnly = !aKin && (spouseByNode[a] && Array.from(spouseByNode[a]).some((id) => rowSet.has(id))) ? 1 : 0;
+            const bSpouseOnly = !bKin && (spouseByNode[b] && Array.from(spouseByNode[b]).some((id) => rowSet.has(id))) ? 1 : 0;
+            const aHasChildren = (childrenByParent[a] || []).length > 0 ? 1 : 0;
+            const bHasChildren = (childrenByParent[b] || []).length > 0 ? 1 : 0;
+            const aRole = aKin ? 0 : (aSpouseOnly ? 2 : 1);
+            const bRole = bKin ? 0 : (bSpouseOnly ? 2 : 1);
+            if (aRole !== bRole) return aRole - bRole;
+            if (aRole === 0 && aHasChildren !== bHasChildren) return aHasChildren - bHasChildren;
+            return ax - bx;
+          });
+          const center = sorted.reduce((sum, id) => sum + pos[id].x, 0) / sorted.length;
+          const start = center - ((sorted.length - 1) * xGap) / 2;
+          sorted.forEach((id, i) => {
+            pos[id].x = start + i * xGap;
+          });
+        });
+
+        Object.entries(parentsByChild).forEach(([childId, parentIds]) => {
+          if (!pos[childId] || !Array.isArray(parentIds) || parentIds.length < 2) return;
+          const parentPos = parentIds.map((id) => pos[id]).filter(Boolean);
+          if (parentPos.length < 2) return;
+          pos[childId].x = parentPos.reduce((sum, p) => sum + p.x, 0) / parentPos.length;
+        });
+
+        Object.values(rowsByDepth).forEach((rowNodeIds) => {
+          if (rowNodeIds.length < 2) return;
+          const sorted = rowNodeIds.slice().sort((a, b) => pos[a].x - pos[b].x);
+          const originalCenter = sorted.reduce((sum, id) => sum + pos[id].x, 0) / sorted.length;
+          const minGap = 256;
+          for (let i = 1; i < sorted.length; i += 1) {
+            const prev = sorted[i - 1];
+            const cur = sorted[i];
+            const gap = pos[cur].x - pos[prev].x;
+            if (gap < minGap) {
+              pos[cur].x = pos[prev].x + minGap;
+            }
+          }
+          const newCenter = sorted.reduce((sum, id) => sum + pos[id].x, 0) / sorted.length;
+          const shift = originalCenter - newCenter;
+          sorted.forEach((id) => {
+            pos[id].x += shift;
+          });
+        });
+
+        const rowCount = maxDepth + 1;
+        const rawHeight = topPad * 2 + (rowCount - 1) * rowGap + NODE_H;
+        const nodeXs = Object.values(pos).map((p) => p.x);
+        const minX = Math.min(...nodeXs);
+        const maxX = Math.max(...nodeXs);
+        const xShift = Math.max(0, 140 - minX);
+        if (xShift > 0) {
+          Object.keys(pos).forEach((id) => {
+            pos[id].x += xShift;
+          });
+        }
+        const shiftedMaxX = Math.max(...Object.values(pos).map((p) => p.x));
+        const width = Math.max(1180, shiftedMaxX + NODE_W / 2 + 140);
+        const eventLaneX = 0;
+        const yForYear = (year, yMin, yMax) => {
+          const ratio = (year - minYear) / spanYears;
+          return yMin + ratio * (yMax - yMin);
+        };
+        const minNodeTop = Math.min(...Object.values(pos).map((p) => p.y));
+        const maxNodeBottom = Math.max(...Object.values(pos).map((p) => p.y + NODE_H));
+        const topMargin = 88;
+        const bottomMargin = 120;
+        const yShift = topMargin - minNodeTop;
+        Object.keys(pos).forEach((id) => {
+          pos[id].y += yShift;
+        });
+        const treeHeight = Math.max(rawHeight, maxNodeBottom + yShift + bottomMargin);
+        const eventMarks = eventRows.map((evt) => ({
+          id: evt.id,
+          title: evt.title,
+          event_type: evt.event_type,
+          year: evt.year,
+          y: yForYear(evt.year, topMargin, treeHeight - topMargin),
+        }));
+        const rowBands = Array.from({ length: rowCount }, (_, l) => {
+          return {
+            level: l,
+            y: topPad + l * rowGap + NODE_H / 2 + yShift,
+          };
+        });
+        return {
+          width,
+          height: treeHeight,
+          pos,
+          nodes,
+          edges,
+          layoutMeta: {
+            level: depth,
+            mode: "time_aligned",
+            minYear,
+            maxYear,
+            eventLaneX,
+            eventMarks,
+            rowBands,
+          },
+        };
+      }
+
+      function computeGraphLayout(subgraph, rootPersonId, layoutMode, contextEvents) {
+        if (layoutMode === "time_aligned") {
+          return computeTimeAlignedLayout(subgraph, rootPersonId, contextEvents);
+        }
+        return computeLayout(subgraph, rootPersonId);
       }
 
       function normalizeDisplayEdges(edges) {
@@ -507,6 +1106,9 @@
       function GraphView({
         subgraph,
         rootPersonId,
+        layoutMode,
+        contextEvents,
+        mediaPreviewByPersonId,
         zoom,
         selectedNodeId,
         highlightedNodeIds,
@@ -515,9 +1117,10 @@
       }) {
         const svgRef = useRef(null);
         const transformRef = useRef(null);
+        const prevLayoutSignatureRef = useRef("");
         const hasData = Boolean(subgraph && subgraph.persons && subgraph.persons.length);
         const safeSubgraph = hasData ? subgraph : { persons: [], relationships: [] };
-        const { width, height, pos, nodes, edges } = computeLayout(safeSubgraph, rootPersonId);
+        const { width, height, pos, nodes, edges, layoutMeta } = computeGraphLayout(safeSubgraph, rootPersonId, layoutMode, contextEvents);
         const names = {};
         nodes.forEach((n) => { names[n.id] = n.full_name; });
         const { undirectedTypes, displayEdges } = normalizeDisplayEdges(edges);
@@ -539,9 +1142,48 @@
             const base = pos[n.id] || { x: 170, y: 100 };
             localPos[n.id] = { x: base.x, y: base.y };
           });
+          const layoutSignature = `${layoutMode}|${width}|${height}|${nodes.map((n) => n.id).join(",")}`;
+          const shouldAnimateNodes = prevLayoutSignatureRef.current !== layoutSignature;
+          prevLayoutSignatureRef.current = layoutSignature;
 
           function drawGraph() {
             root.selectAll(".edge-layer,.node-layer").remove();
+            if (layoutMode === "time_aligned" && layoutMeta && Array.isArray(layoutMeta.rowBands)) {
+              const bandLayer = root.append("g").attr("class", "edge-layer");
+              layoutMeta.rowBands.forEach((band, i) => {
+                const yy = band.y;
+                bandLayer
+                  .append("line")
+                  .attr("x1", 74)
+                  .attr("x2", width - 28)
+                  .attr("y1", yy)
+                  .attr("y2", yy)
+                  .attr("stroke", "rgba(160, 65, 0, 0.18)")
+                  .attr("stroke-width", 1.1)
+                  .attr("stroke-dasharray", "3 7");
+                bandLayer
+                  .append("text")
+                  .attr("x", 26)
+                  .attr("y", yy - 8)
+                  .attr("font-size", 10)
+                  .attr("font-family", "Manrope, sans-serif")
+                  .attr("font-weight", 700)
+                  .attr("fill", "#9a7c64")
+                  .text(`Generation ${band.level >= 0 ? `+${band.level}` : band.level}`);
+                if (i === 0) {
+                  bandLayer
+                    .append("text")
+                    .attr("x", 26)
+                    .attr("y", 22)
+                    .attr("font-size", 11)
+                    .attr("font-family", "Manrope, sans-serif")
+                    .attr("letter-spacing", "0.08em")
+                    .attr("text-transform", "uppercase")
+                    .attr("fill", "#a38873")
+                    .text("Hierarchical Family Tree");
+                }
+              });
+            }
             const pairCounts = new Map();
             displayEdges.forEach((edge) => {
               const pairKey = undirectedTypes.has(edge.relationship_type)
@@ -559,9 +1201,24 @@
             });
             const directedIncomingSeen = new Map();
             const directedOutgoingSeen = new Map();
+            const lateralLaneSeen = new Map();
+            const parentGroups = new Map();
+            const parentJunctionByChild = new Map();
+            displayEdges.forEach((edge) => {
+              if (edge.relationship_type !== "parent_of") return;
+              if (!localPos[edge.from_person_id] || !localPos[edge.to_person_id]) return;
+              const childId = edge.to_person_id;
+              if (!parentGroups.has(childId)) parentGroups.set(childId, []);
+              parentGroups.get(childId).push(edge.from_person_id);
+            });
+            parentGroups.forEach((parents, childId) => {
+              parents.sort((a, b) => (localPos[a].x - localPos[b].x) || a.localeCompare(b));
+              parentGroups.set(childId, parents);
+            });
 
             const edgeLayer = root.append("g").attr("class", "edge-layer");
             const nodeLayer = root.append("g").attr("class", "node-layer");
+            const labelSpecs = [];
 
             displayEdges.forEach((edge) => {
               let fromId = edge.from_person_id;
@@ -583,9 +1240,84 @@
                 isUndirected ? [edge.from_person_id, edge.to_person_id].sort().join("|") : `${edge.from_person_id}|${edge.to_person_id}`
               ) || 1;
               const laneOffset = (seen - (count - 1) / 2) * 14;
-              let sourceSpread = 0;
-              let targetSpread = 0;
-              if (!isUndirected) {
+              const highlighted = (
+                highlightedEdgeKeys.has(edgeKey(edge.from_person_id, edge.to_person_id)) ||
+                highlightedEdgeKeys.has(edgeKey(edge.to_person_id, edge.from_person_id))
+              );
+              const relType = edge.relationship_type;
+              const edgeStyle = (() => {
+                if (highlighted) return { color: "var(--graph-highlight)", width: 3.4, dash: null };
+                if (relType === "parent_of") return { color: layoutMode === "time_aligned" ? "rgba(160, 65, 0, 0.44)" : "var(--graph-edge)", width: 2.2, dash: null };
+                if (relType === "spouse_of" || relType === "partner_of") return { color: "rgba(76, 86, 175, 0.52)", width: 1.9, dash: null };
+                if (relType === "sibling_of") return { color: "rgba(122, 48, 0, 0.44)", width: 1.8, dash: "6 4" };
+                if (relType === "cousin_of") return { color: "rgba(122, 48, 0, 0.34)", width: 1.5, dash: "3 5" };
+                return { color: "var(--graph-edge)", width: 2, dash: null };
+              })();
+              let points = [];
+              let endX = 0;
+              let endY = 0;
+              let labelX = 0;
+              let labelY = 0;
+
+              if (relType === "parent_of") {
+                const parents = parentGroups.get(toId) || [fromId];
+                const parentIdx = Math.max(0, parents.indexOf(fromId));
+                const parentCount = Math.max(1, parents.length);
+                const fanOffset = (parentIdx - (parentCount - 1) / 2) * 34;
+                const startX = from.x + fanOffset * 0.2;
+                const startY = from.y + NODE_H;
+                const junctionX = to.x;
+                const junctionY = to.y - 34 - Math.max(0, parentCount - 2) * 8;
+                parentJunctionByChild.set(toId, { x: junctionX, y: junctionY });
+                const approachX = junctionX + fanOffset;
+                const mergeY = Math.max(startY + 24, junctionY - 24);
+                points = [
+                  [startX, startY],
+                  [startX, mergeY],
+                  [approachX, mergeY],
+                  [approachX, junctionY],
+                  [junctionX, junctionY],
+                ];
+                endX = junctionX;
+                endY = junctionY;
+                labelX = (startX + approachX) / 2;
+                labelY = mergeY - 10;
+              } else if (isUndirected) {
+                const startX = from.x;
+                const startY = from.y;
+                const endXRaw = to.x;
+                const endYRaw = to.y;
+                const relationLane = relType === "spouse_of" || relType === "partner_of"
+                  ? 0
+                  : relType === "sibling_of"
+                    ? 1
+                    : relType === "cousin_of"
+                      ? 2
+                      : 3;
+                const laneKey = `${relType}|${Math.round((startY + endYRaw) / 2 / 22)}`;
+                const laneSeen = lateralLaneSeen.get(laneKey) || 0;
+                lateralLaneSeen.set(laneKey, laneSeen + 1);
+                const bridgeY = Math.min(startY, endYRaw) - 46 - relationLane * 22 - laneSeen * 12 - Math.abs(laneOffset) * 1.4;
+                const gap = Math.abs(endXRaw - startX);
+                const minGap = 220;
+                const detour = gap < minGap ? (minGap - gap) / 2 + 16 : 0;
+                const bridgeLeftX = startX - detour;
+                const bridgeRightX = endXRaw + detour;
+                points = [
+                  [startX, startY],
+                  [startX, bridgeY],
+                  [bridgeLeftX, bridgeY],
+                  [bridgeRightX, bridgeY],
+                  [endXRaw, bridgeY],
+                  [endXRaw, endYRaw],
+                ];
+                endX = endXRaw;
+                endY = endYRaw;
+                labelX = (bridgeLeftX + bridgeRightX) / 2;
+                labelY = bridgeY - 8;
+              } else {
+                let sourceSpread = 0;
+                let targetSpread = 0;
                 const outSeen = directedOutgoingSeen.get(fromId) || 0;
                 directedOutgoingSeen.set(fromId, outSeen + 1);
                 const outCount = directedOutgoingCounts.get(fromId) || 1;
@@ -594,95 +1326,47 @@
                 directedIncomingSeen.set(toId, inSeen + 1);
                 const inCount = directedIncomingCounts.get(toId) || 1;
                 targetSpread = (inSeen - (inCount - 1) / 2) * 10;
+                const startX = from.x + laneOffset + sourceSpread;
+                const startY = from.y + NODE_H;
+                const endXRaw = to.x + laneOffset + targetSpread;
+                const endYRaw = to.y;
+                const bridgeY = Math.min(startY, endYRaw) - 46 - Math.abs(laneOffset) * 1.8;
+                points = [
+                  [startX, startY],
+                  [startX, bridgeY],
+                  [endXRaw, bridgeY],
+                  [endXRaw, endYRaw],
+                ];
+                endX = endXRaw;
+                endY = endYRaw;
+                labelX = (startX + endXRaw) / 2;
+                labelY = bridgeY - 9;
               }
 
-              const deltaX = to.x - from.x;
-              const deltaY = to.y - from.y;
-              const isPrimarilyVertical = Math.abs(deltaY) > Math.abs(deltaX);
-              let startX;
-              let startY;
-              let endX;
-              let endY;
-              let control1X;
-              let control1Y;
-              let control2X;
-              let control2Y;
-              if (isPrimarilyVertical) {
-                const fromDown = to.y >= from.y;
-                startX = from.x + laneOffset + sourceSpread;
-                startY = from.y + (fromDown ? NODE_H : 0);
-                endX = to.x + laneOffset + targetSpread;
-                endY = to.y + (fromDown ? 0 : NODE_H);
-                const controlDeltaY = Math.max(36, Math.abs(endY - startY) * 0.35);
-                control1X = startX;
-                control1Y = startY + (fromDown ? controlDeltaY : -controlDeltaY);
-                control2X = endX;
-                control2Y = endY - (fromDown ? controlDeltaY : -controlDeltaY);
-              } else {
-                const leftToRight = to.x >= from.x;
-                startX = from.x + (leftToRight ? NODE_HALF_W : -NODE_HALF_W);
-                startY = from.y + NODE_HALF_H + laneOffset + sourceSpread;
-                endX = to.x + (leftToRight ? -NODE_HALF_W : NODE_HALF_W);
-                endY = to.y + NODE_HALF_H + laneOffset + targetSpread;
-                const horizontalSpan = Math.abs(endX - startX);
-                if (horizontalSpan < 44) {
-                  const bulge = 54 + Math.abs(laneOffset) * 1.2;
-                  control1X = startX + (startX <= endX ? 18 : -18);
-                  control1Y = startY - bulge;
-                  control2X = endX + (startX <= endX ? -18 : 18);
-                  control2Y = endY - bulge;
-                } else {
-                  const controlDeltaX = Math.max(44, horizontalSpan * 0.35);
-                  control1X = startX + (startX <= endX ? controlDeltaX : -controlDeltaX);
-                  control1Y = startY;
-                  control2X = endX + (startX <= endX ? -controlDeltaX : controlDeltaX);
-                  control2Y = endY;
-                }
-              }
-              if (!isUndirected) {
-                const vecX = endX - startX;
-                const vecY = endY - startY;
-                const len = Math.max(1, Math.hypot(vecX, vecY));
-                const ux = vecX / len;
-                const uy = vecY / len;
-                const arrowGap = 11;
-                endX -= ux * arrowGap;
-                endY -= uy * arrowGap;
-                control2X -= ux * (arrowGap * 0.8);
-                control2Y -= uy * (arrowGap * 0.8);
-              }
-              const labelX = (startX + endX) / 2;
-              const labelY = (startY + endY) / 2 - 9;
-              const highlighted = (
-                highlightedEdgeKeys.has(edgeKey(edge.from_person_id, edge.to_person_id)) ||
-                highlightedEdgeKeys.has(edgeKey(edge.to_person_id, edge.from_person_id))
-              );
+              const pathD = `M ${points.map((p) => `${p[0]} ${p[1]}`).join(" L ")}`;
 
-              const edgeColor = highlighted ? "var(--graph-highlight)" : "var(--graph-edge)";
+              const edgeColor = edgeStyle.color;
               edgeLayer
                 .append("path")
-                .attr("d", `M ${startX} ${startY} C ${control1X} ${control1Y}, ${control2X} ${control2Y}, ${endX} ${endY}`)
+                .attr("d", pathD)
                 .attr("fill", "none")
                 .attr("stroke", edgeColor)
-                .attr("stroke-width", highlighted ? 3.5 : 2)
-                .attr("stroke-linecap", "round");
+                .attr("stroke-width", edgeStyle.width)
+                .attr("stroke-linecap", "round")
+                .attr("stroke-linejoin", "round")
+                .attr("stroke-dasharray", edgeStyle.dash);
 
-              if (!isUndirected) {
-                const tanX = endX - control2X;
-                const tanY = endY - control2Y;
-                const tanLen = Math.max(1, Math.hypot(tanX, tanY));
-                const ux = tanX / tanLen;
-                const uy = tanY / tanLen;
-                const px = -uy;
-                const py = ux;
+              if (!isUndirected && relType !== "parent_of") {
+                const tanX = 0;
+                const tanY = 1;
                 const headLen = 11;
                 const headWidth = 5;
-                const baseX = endX - ux * headLen;
-                const baseY = endY - uy * headLen;
-                const leftX = baseX + px * headWidth;
-                const leftY = baseY + py * headWidth;
-                const rightX = baseX - px * headWidth;
-                const rightY = baseY - py * headWidth;
+                const baseX = endX - tanX * headLen;
+                const baseY = endY - tanY * headLen;
+                const leftX = baseX - headWidth;
+                const leftY = baseY;
+                const rightX = baseX + headWidth;
+                const rightY = baseY;
                 edgeLayer
                   .append("polygon")
                   .attr("points", `${endX},${endY} ${leftX},${leftY} ${rightX},${rightY}`)
@@ -691,19 +1375,48 @@
                   .attr("stroke-width", 0.8);
               }
 
-              edgeLayer
-                .append("text")
-                .attr("x", labelX)
-                .attr("y", labelY)
-                .attr("text-anchor", "middle")
-                .attr("font-size", 14)
-                .attr("font-family", "Manrope, sans-serif")
-                .attr("font-weight", 650)
-                .attr("fill", highlighted ? "#9a5b1c" : "#607488")
-                .text(edge.relationship_type);
+              labelSpecs.push({
+                x: labelX,
+                y: labelY,
+                text: edge.relationship_type,
+                highlighted,
+              });
             });
 
-            nodes.forEach((node) => {
+            parentJunctionByChild.forEach((junction, childId) => {
+              const child = localPos[childId];
+              if (!child) return;
+              const edgeColor = layoutMode === "time_aligned" ? "rgba(160, 65, 0, 0.44)" : "var(--graph-edge)";
+              edgeLayer
+                .append("line")
+                .attr("x1", junction.x)
+                .attr("y1", junction.y)
+                .attr("x2", child.x)
+                .attr("y2", child.y)
+                .attr("stroke", edgeColor)
+                .attr("stroke-width", 2.2)
+                .attr("stroke-linecap", "round");
+              const tanX = 0;
+              const tanY = 1;
+              const headLen = 11;
+              const headWidth = 5;
+              const endX = child.x;
+              const endY = child.y;
+              const baseX = endX - tanX * headLen;
+              const baseY = endY - tanY * headLen;
+              const leftX = baseX - headWidth;
+              const leftY = baseY;
+              const rightX = baseX + headWidth;
+              const rightY = baseY;
+              edgeLayer
+                .append("polygon")
+                .attr("points", `${endX},${endY} ${leftX},${leftY} ${rightX},${rightY}`)
+                .attr("fill", edgeColor)
+                .attr("stroke", edgeColor)
+                .attr("stroke-width", 0.8);
+            });
+
+            nodes.forEach((node, idx) => {
               const p = localPos[node.id];
               if (!p) return;
               const isRoot = node.id === rootPersonId;
@@ -720,6 +1433,9 @@
               const years = `${node.birth_date || "?"} — ${node.death_date || "present"}`;
               const badge = (node.occupation || node.religion || "ancestor").slice(0, 20);
               const g = nodeLayer.append("g").style("cursor", "pointer").datum(node);
+              const level = layoutMeta && layoutMeta.level ? (layoutMeta.level[node.id] || 0) : 0;
+              const introOffset = layoutMode === "time_aligned" ? Math.max(-20, Math.min(24, level * 8)) : 0;
+              g.style("opacity", 0).attr("transform", `translate(0, ${introOffset})`);
               g.append("rect")
                 .attr("x", p.x - NODE_HALF_W)
                 .attr("y", p.y)
@@ -729,24 +1445,49 @@
                 .attr("fill", fill)
                 .attr("stroke", stroke)
                 .attr("stroke-width", isSelected ? 3 : 2);
+              const portraitX = p.x - NODE_HALF_W + 12;
+              const portraitY = p.y + 14;
+              const portraitW = 56;
+              const portraitH = 74;
               g.append("rect")
-                .attr("x", p.x - NODE_HALF_W + 12)
-                .attr("y", p.y + 14)
-                .attr("width", 56)
-                .attr("height", 74)
+                .attr("x", portraitX)
+                .attr("y", portraitY)
+                .attr("width", portraitW)
+                .attr("height", portraitH)
                 .attr("rx", 8)
                 .attr("fill", isRoot ? "rgba(255,255,255,0.2)" : "#d5d2cc")
                 .attr("stroke", isRoot ? "rgba(255,255,255,0.35)" : "#c4c6cd")
                 .attr("stroke-width", 1);
-              g.append("text")
-                .attr("x", p.x - NODE_HALF_W + 40)
-                .attr("y", p.y + 58)
-                .attr("text-anchor", "middle")
-                .attr("font-size", 11)
-                .attr("font-family", "Manrope, sans-serif")
-                .attr("font-weight", 700)
-                .attr("fill", isRoot ? "rgba(255,255,255,0.88)" : "#5c6a79")
-                .text("Portrait");
+              const previewUrl = mediaPreviewByPersonId && mediaPreviewByPersonId[node.id];
+              if (previewUrl) {
+                const clipId = `portrait-${node.id}`;
+                g.append("clipPath")
+                  .attr("id", clipId)
+                  .append("rect")
+                  .attr("x", portraitX)
+                  .attr("y", portraitY)
+                  .attr("width", portraitW)
+                  .attr("height", portraitH)
+                  .attr("rx", 8);
+                g.append("image")
+                  .attr("x", portraitX)
+                  .attr("y", portraitY)
+                  .attr("width", portraitW)
+                  .attr("height", portraitH)
+                  .attr("preserveAspectRatio", "xMidYMid slice")
+                  .attr("clip-path", `url(#${clipId})`)
+                  .attr("href", previewUrl);
+              } else {
+                g.append("text")
+                  .attr("x", p.x - NODE_HALF_W + 40)
+                  .attr("y", p.y + 58)
+                  .attr("text-anchor", "middle")
+                  .attr("font-size", 11)
+                  .attr("font-family", "Manrope, sans-serif")
+                  .attr("font-weight", 700)
+                  .attr("fill", isRoot ? "rgba(255,255,255,0.88)" : "#5c6a79")
+                  .text("Portrait");
+              }
               g.append("text")
                 .attr("x", p.x - NODE_HALF_W + 80)
                 .attr("y", p.y + 36)
@@ -802,6 +1543,39 @@
                 .attr("fill", isRoot ? "rgba(255,255,255,0.9)" : "#7a3000")
                 .text(badge);
               g.on("click", () => onNodeClick(node.id));
+              if (shouldAnimateNodes) {
+                g.transition()
+                  .duration(260)
+                  .delay(Math.min(220, idx * 18))
+                  .ease(d3.easeCubicOut)
+                  .style("opacity", 1)
+                  .attr("transform", "translate(0,0)");
+              } else {
+                g.style("opacity", 1).attr("transform", "translate(0,0)");
+              }
+            });
+
+            const labelLayer = root.append("g").attr("class", "edge-label-layer");
+            labelSpecs.forEach((label) => {
+              const labelWidth = Math.max(52, label.text.length * 7.6);
+              labelLayer
+                .append("rect")
+                .attr("x", label.x - labelWidth / 2)
+                .attr("y", label.y - 14)
+                .attr("width", labelWidth)
+                .attr("height", 18)
+                .attr("rx", 9)
+                .attr("fill", "rgba(251, 249, 245, 0.92)");
+              labelLayer
+                .append("text")
+                .attr("x", label.x)
+                .attr("y", label.y)
+                .attr("text-anchor", "middle")
+                .attr("font-size", 14)
+                .attr("font-family", "Manrope, sans-serif")
+                .attr("font-weight", 650)
+                .attr("fill", label.highlighted ? "#9a5b1c" : "#607488")
+                .text(label.text);
             });
           }
 
@@ -819,7 +1593,7 @@
           svg.call(zoomBehavior.transform, startingTransform);
 
           drawGraph();
-        }, [displayEdges, hasData, highlightedEdgeKeys, highlightedNodeIds, names, nodes, onNodeClick, pos, rootPersonId, selectedNodeId, undirectedTypes, width, height, zoom]);
+        }, [contextEvents, displayEdges, hasData, highlightedEdgeKeys, highlightedNodeIds, layoutMeta, layoutMode, mediaPreviewByPersonId, names, nodes, onNodeClick, pos, rootPersonId, selectedNodeId, undirectedTypes, width, height, zoom]);
 
         if (!hasData) {
           return React.createElement("div", { className: "muted", style: { padding: "14px" } }, "Load a subgraph to begin exploration.");
@@ -853,6 +1627,7 @@
         const [timelineToDate, setTimelineToDate] = useState("");
         const [timelineEventTypes, setTimelineEventTypes] = useState("");
         const [personMedia, setPersonMedia] = useState([]);
+        const [mediaPreviewByPersonId, setMediaPreviewByPersonId] = useState({});
         const [personPlaces, setPersonPlaces] = useState([]);
         const [selectedPlace, setSelectedPlace] = useState(null);
         const [migrationGeoJson, setMigrationGeoJson] = useState(null);
@@ -869,11 +1644,13 @@
         const [lastDirection, setLastDirection] = useState("descendants");
         const [lastDepth, setLastDepth] = useState(2);
         const [lastMode, setLastMode] = useState("lineage");
+        const [lastLayoutMode, setLastLayoutMode] = useState("hierarchy");
         const [lastLateralTypes, setLastLateralTypes] = useState("spouse_of,sibling_of,cousin_of");
         const [lastLateralDepth, setLastLateralDepth] = useState(1);
         const [status, setStatus] = useState("");
         const [leftOpen, setLeftOpen] = useState(true);
         const [rightOpen, setRightOpen] = useState(true);
+        const [timeTimelineOpen, setTimeTimelineOpen] = useState(true);
         const [selectedPersonId, setSelectedPersonId] = useState("");
         const [highlightedNodeIds, setHighlightedNodeIds] = useState([]);
         const [highlightedEdgeKeys, setHighlightedEdgeKeys] = useState([]);
@@ -986,6 +1763,17 @@
           rows.sort((a, b) => a.sortDate.localeCompare(b.sortDate) || a.name.localeCompare(b.name));
           return rows.slice(0, 12);
         }, [subgraph, contextEvents]);
+        const historicalTimelineItems = useMemo(() => {
+          return (contextEvents || [])
+            .map((evt) => ({
+              id: evt.id,
+              yearLabel: evt.date ? evt.date.slice(0, 4) : "Era",
+              title: evt.title || "Untitled event",
+              description: evt.description || "No event description provided.",
+            }))
+            .sort((a, b) => a.yearLabel.localeCompare(b.yearLabel))
+            .slice(0, 40);
+        }, [contextEvents]);
 
         function setActiveUser(id) {
           if (id !== activeUserId && authToken) {
@@ -1095,6 +1883,7 @@
         async function loadCircleData(circleId) {
           if ((!activeUserId && !authToken) || !circleId) {
             setMembers([]); setPersons([]); setRelationships([]); setChangeRequests([]); setContextEvents([]); setTimeline([]);
+            setMediaPreviewByPersonId({});
             return;
           }
           const [m, p, r, cr, ce] = await Promise.all([
@@ -1105,6 +1894,22 @@
             requestJson(`/circles/${circleId}/context-events`, { headers }),
           ]);
           setMembers(m); setPersons(p); setRelationships(r); setChangeRequests(cr); setContextEvents(ce);
+          const previews = {};
+          await Promise.all((p || []).slice(0, 80).map(async (person) => {
+            try {
+              const mediaRows = await requestJson(`/circles/${circleId}/persons/${person.id}/media`, { headers });
+              if (mediaRows && mediaRows.length) {
+                const first = mediaRows[0];
+                const authQuery = authToken
+                  ? `token=${encodeURIComponent(authToken)}`
+                  : `user_id=${encodeURIComponent(activeUserId || "")}`;
+                previews[person.id] = `/circles/${circleId}/media/${first.id}/download?${authQuery}&v=${encodeURIComponent(first.id)}`;
+              }
+            } catch (_) {
+              // ignore unavailable media rows for preview
+            }
+          }));
+          setMediaPreviewByPersonId(previews);
         }
 
         async function loadManagementData(circleId) {
@@ -1145,13 +1950,13 @@
         useEffect(() => { loadMyInvites().catch((e) => setStatus(e.message)); }, [activeUserId, authToken]);
         useEffect(() => {
           if (!subgraph) return;
-          const next = computeLayout(subgraph, lastRoot);
+          const next = computeGraphLayout(subgraph, lastRoot, lastLayoutMode, contextEvents);
           setGraphSize((prev) => (
             prev.width === next.width && prev.height === next.height
               ? prev
               : { width: next.width, height: next.height }
           ));
-        }, [subgraph, lastRoot]);
+        }, [subgraph, lastRoot, lastLayoutMode, contextEvents]);
 
         async function createUser(e) {
           e.preventDefault();
@@ -1366,6 +2171,7 @@
           const direction = e.target.direction.value;
           const depth = Number(e.target.depth.value || 2);
           const mode = e.target.mode.value || "lineage";
+          const layoutMode = e.target.layout_mode.value || "hierarchy";
           const lateralTypes = e.target.lateral_types.value.trim() || "spouse_of,sibling_of,cousin_of";
           const lateralDepth = Number(e.target.lateral_depth.value || 1);
           const data = await requestJson(
@@ -1377,6 +2183,7 @@
           setLastDirection(direction);
           setLastDepth(depth);
           setLastMode(mode);
+          setLastLayoutMode(layoutMode);
           setLastLateralTypes(lateralTypes);
           setLastLateralDepth(lateralDepth);
           setSelectedPersonId(root);
@@ -1956,7 +2763,7 @@
               React.createElement("div", { className: "graph-scroll", key: "scroll", ref: graphViewportRef }, [
                 React.createElement("div", { style: { padding: "12px 12px 0 12px" }, key: "controls" }, [
                   React.createElement("form", { onSubmit: (e) => loadSubgraph(e).catch((x) => setStatus(x.message)), key: "f" }, [
-                    React.createElement("div", { style: { display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 2fr 1fr", gap: "8px" }, key: "g" }, [
+                    React.createElement("div", { style: { display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 1fr 2fr 1fr", gap: "8px" }, key: "g" }, [
                       React.createElement("select", { key: "p", name: "root_person_id" }, personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))),
                       React.createElement("select", { key: "d", name: "direction" }, [
                         React.createElement("option", { key: "desc", value: "descendants" }, "descendants"),
@@ -1967,59 +2774,110 @@
                         React.createElement("option", { key: "l", value: "lineage" }, "lineage"),
                         React.createElement("option", { key: "f", value: "family_expanded" }, "family_expanded"),
                       ]),
+                      React.createElement("select", { key: "layout_mode", name: "layout_mode", value: lastLayoutMode, onChange: (e) => setLastLayoutMode(e.target.value) }, [
+                        React.createElement("option", { key: "h", value: "hierarchy" }, "hierarchy"),
+                        React.createElement("option", { key: "t", value: "time_aligned" }, "time_aligned"),
+                      ]),
                       React.createElement("input", { key: "ld", type: "number", name: "lateral_depth", min: 0, max: 4, defaultValue: 1 }),
                       React.createElement("input", { key: "lt", name: "lateral_types", defaultValue: "spouse_of,sibling_of,cousin_of", placeholder: "spouse_of,sibling_of,cousin_of" }),
                       React.createElement("button", { key: "b", type: "submit", disabled: personOptions.length === 0 }, "Render Graph"),
                     ])
                   ])
                 ]),
-                React.createElement("section", { className: "lineage-journey", key: "lineage-journey" }, [
-                  React.createElement("div", { className: "lineage-journey-head", key: "h" }, [
-                    React.createElement("div", { className: "lineage-journey-title", key: "t" }, "Lineage Journey"),
-                    React.createElement("div", { className: "muted", key: "m" }, lineageJourneyItems.length ? `${lineageJourneyItems.length} profiles` : "Render a graph to build timeline"),
-                  ]),
-                  React.createElement("div", { className: "lineage-journey-subtitle", key: "sub" }, "Tracing roots from earliest known ancestors through defining world events."),
-                  React.createElement("div", { className: "lineage-journey-rail", key: "trk" },
-                    lineageJourneyItems.length
-                      ? lineageJourneyItems.map((item, idx) =>
-                          React.createElement("div", { className: `journey-row ${idx % 2 ? "flip" : ""}`, key: item.id }, [
-                            React.createElement("div", { className: "journey-person", key: "p" },
-                              React.createElement("button", {
-                                type: "button",
-                                className: "journey-person-card",
-                                onMouseDown: (e) => e.preventDefault(),
-                                onClick: () => applyPersonFocus(item.id),
-                              }, [
-                                React.createElement("div", { className: "journey-person-head", key: "ph" }, [
-                                  React.createElement("div", { className: "lineage-name", key: "n" }, item.name),
-                                  React.createElement("span", { className: "journey-chip", key: "c" }, item.badge),
-                                ]),
-                                React.createElement("div", { className: "lineage-years", key: "y" }, `${item.birthDate || "?"} — ${item.deathDate || "present"}`),
-                                React.createElement("div", { className: "muted", key: "bp" }, item.birthPlace || "Birthplace unknown"),
-                              ])
-                            ),
-                            React.createElement("div", { className: "journey-center", key: "d" }, React.createElement("span", { className: "journey-dot" })),
-                            React.createElement("div", { className: "journey-context", key: "ctx" }, [
-                              React.createElement("div", { className: "journey-context-label", key: "lbl" }, `World Events • ${(item.birthDate || item.deathDate || "").slice(0, 4) || "Era"}`),
-                              ...(item.worldEvents.length
-                                ? item.worldEvents.map((evt, i) => React.createElement("div", { key: `e-${i}` }, `• ${evt}`))
-                                : [React.createElement("div", { className: "muted", key: "none" }, "No mapped world events for this year.")]),
+                lastLayoutMode === "time_aligned"
+                  ? React.createElement("section", { className: "time-aligned-shell", key: "time-shell" }, [
+                      timeTimelineOpen
+                        ? React.createElement("aside", { className: "historical-panel", key: "timeline" }, [
+                            React.createElement("div", { className: "historical-panel-head", key: "h" }, [
+                              React.createElement("div", { className: "historical-panel-title", key: "t" }, "Historical Tapestry"),
+                              React.createElement("button", { className: "btn", key: "c", type: "button", onClick: () => setTimeTimelineOpen(false) }, "Hide"),
                             ]),
+                            React.createElement("div", { className: "historical-list", key: "lst" },
+                              historicalTimelineItems.length
+                                ? historicalTimelineItems.map((evt, idx) =>
+                                    React.createElement("div", { className: "historical-item", key: evt.id }, [
+                                      React.createElement("span", { className: "historical-dot", key: "d" }),
+                                      React.createElement("div", { className: "historical-year", key: "y" }, evt.yearLabel),
+                                      React.createElement("div", { className: "historical-event", key: "t" }, evt.title),
+                                      React.createElement("div", { className: "historical-desc", key: "x" }, evt.description),
+                                      (evt.description && evt.description.length > 90) || idx % 4 === 1
+                                        ? React.createElement("div", { className: "historical-media", key: "m" }, [
+                                            React.createElement("span", { className: "historical-media-tag", key: "tag" }, "Archival Visual"),
+                                          ])
+                                        : null,
+                                    ])
+                                  )
+                                : [React.createElement("div", { className: "muted", key: "none" }, "Add context events to populate timeline.")])
                           ])
+                        : React.createElement("button", { className: "btn", key: "show-timeline", type: "button", onClick: () => setTimeTimelineOpen(true) }, "Show Timeline"),
+                      React.createElement("div", { className: "time-graph-stage", key: "g" }, [
+                        React.createElement(GraphView, {
+                          key: "graph",
+                          subgraph,
+                          rootPersonId: lastRoot,
+                          layoutMode: lastLayoutMode,
+                          contextEvents,
+                          mediaPreviewByPersonId,
+                          zoom,
+                          selectedNodeId: selectedPersonId,
+                          highlightedNodeIds: highlightedNodeSet,
+                          highlightedEdgeKeys: highlightedEdgeSet,
+                          onNodeClick: applyPersonFocus,
+                        }),
+                      ]),
+                    ])
+                  : React.createElement(React.Fragment, { key: "journey-default" }, [
+                      React.createElement("section", { className: "lineage-journey", key: "lineage-journey" }, [
+                        React.createElement("div", { className: "lineage-journey-head", key: "h" }, [
+                          React.createElement("div", { className: "lineage-journey-title", key: "t" }, "Lineage Journey"),
+                          React.createElement("div", { className: "muted", key: "m" }, lineageJourneyItems.length ? `${lineageJourneyItems.length} profiles` : "Render a graph to build timeline"),
+                        ]),
+                        React.createElement("div", { className: "lineage-journey-subtitle", key: "sub" }, "Tracing roots from earliest known ancestors through defining world events."),
+                        React.createElement("div", { className: "lineage-journey-rail", key: "trk" },
+                          lineageJourneyItems.length
+                            ? lineageJourneyItems.map((item, idx) =>
+                                React.createElement("div", { className: `journey-row ${idx % 2 ? "flip" : ""}`, key: item.id }, [
+                                  React.createElement("div", { className: "journey-person", key: "p" },
+                                    React.createElement("button", {
+                                      type: "button",
+                                      className: "journey-person-card",
+                                      onMouseDown: (e) => e.preventDefault(),
+                                      onClick: () => applyPersonFocus(item.id),
+                                    }, [
+                                      React.createElement("div", { className: "journey-person-head", key: "ph" }, [
+                                        React.createElement("div", { className: "lineage-name", key: "n" }, item.name),
+                                        React.createElement("span", { className: "journey-chip", key: "c" }, item.badge),
+                                      ]),
+                                      React.createElement("div", { className: "lineage-years", key: "y" }, `${item.birthDate || "?"} — ${item.deathDate || "present"}`),
+                                      React.createElement("div", { className: "muted", key: "bp" }, item.birthPlace || "Birthplace unknown"),
+                                    ])
+                                  ),
+                                  React.createElement("div", { className: "journey-center", key: "d" }, React.createElement("span", { className: "journey-dot" })),
+                                  React.createElement("div", { className: "journey-context", key: "ctx" }, [
+                                    React.createElement("div", { className: "journey-context-label", key: "lbl" }, `World Events • ${(item.birthDate || item.deathDate || "").slice(0, 4) || "Era"}`),
+                                    ...(item.worldEvents.length
+                                      ? item.worldEvents.map((evt, i) => React.createElement("div", { key: `e-${i}` }, `• ${evt}`))
+                                      : [React.createElement("div", { className: "muted", key: "none" }, "No mapped world events for this year.")]),
+                                  ]),
+                                ])
+                              )
+                            : [React.createElement("div", { className: "muted", key: "empty" }, "Timeline entries appear here after graph render.")]
                         )
-                      : [React.createElement("div", { className: "muted", key: "empty" }, "Timeline entries appear here after graph render.")]
-                  )
-                ]),
-                React.createElement(GraphView, {
-                  key: "graph",
-                  subgraph,
-                  rootPersonId: lastRoot,
-                  zoom,
-                  selectedNodeId: selectedPersonId,
-                  highlightedNodeIds: highlightedNodeSet,
-                  highlightedEdgeKeys: highlightedEdgeSet,
-                  onNodeClick: applyPersonFocus,
-                }),
+                      ]),
+                      React.createElement(GraphView, {
+                        key: "graph",
+                        subgraph,
+                        rootPersonId: lastRoot,
+                        layoutMode: lastLayoutMode,
+                        contextEvents,
+                        mediaPreviewByPersonId,
+                        zoom,
+                        selectedNodeId: selectedPersonId,
+                        highlightedNodeIds: highlightedNodeSet,
+                        highlightedEdgeKeys: highlightedEdgeSet,
+                        onNodeClick: applyPersonFocus,
+                      }),
+                    ]),
               ])
             ]),
 
