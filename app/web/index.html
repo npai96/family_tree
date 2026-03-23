@@ -76,6 +76,25 @@
       .btn:hover {
         background: #fff;
       }
+      .timeline-reveal-btn {
+        align-self: center;
+        margin-top: 120px;
+        width: 44px;
+        height: 140px;
+        border-radius: 28px;
+        border: 1px solid rgba(196, 198, 205, 0.42);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(245, 243, 239, 0.92));
+        color: #4e5e6f;
+        box-shadow: 0 10px 22px rgba(27, 28, 26, 0.06);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 18px;
+      }
+      .timeline-reveal-btn:hover {
+        color: var(--primary);
+        transform: translateX(1px);
+      }
       .shell {
         height: calc(100vh - 62px);
         display: grid;
@@ -389,9 +408,9 @@
         padding: 10px 12px 0;
       }
       .historical-panel {
-        border: 1px solid var(--outline);
-        border-radius: 18px;
-        background: rgba(255, 255, 255, 0.9);
+        border: 1px solid rgba(196, 198, 205, 0.2);
+        border-radius: 28px;
+        background: rgba(255, 255, 255, 0.95);
         box-shadow: 0 12px 28px rgba(27, 28, 26, 0.05);
         overflow: hidden;
       }
@@ -554,8 +573,8 @@
         const nodes = subgraph?.persons || [];
         const edges = subgraph?.relationships || [];
         if (!nodes.length) return { width: 1000, height: 600, pos: {}, nodes, edges, layoutMeta: {} };
-        const NODE_H = 132;
-        const NODE_W = 236;
+        const NODE_H = 152;
+        const NODE_W = 312;
         const byId = {};
         nodes.forEach((n) => { byId[n.id] = n; });
         const parentEdges = normalizeParentEdges(edges).filter(([p, c]) => byId[p] && byId[c]);
@@ -579,10 +598,10 @@
           childrenByParent[p].push(c);
         });
 
-        const leftPad = 180;
+        const leftPad = 280;
         const topPad = 96;
-        const xGap = 296;
-        const rowGap = 228;
+        const xGap = 356;
+        const rowGap = 244;
         const depth = {};
         const assigned = new Set();
         const roots = nodes
@@ -694,7 +713,7 @@
           if (rowNodeIds.length < 2) return;
           const sorted = rowNodeIds.slice().sort((a, b) => pos[a].x - pos[b].x);
           const originalCenter = sorted.reduce((sum, id) => sum + pos[id].x, 0) / sorted.length;
-          const minGap = 256;
+          const minGap = 334;
           for (let i = 1; i < sorted.length; i += 1) {
             const prev = sorted[i - 1];
             const cur = sorted[i];
@@ -714,14 +733,14 @@
         const nodeXs = Object.values(pos).map((p) => p.x);
         const minX = Math.min(...nodeXs);
         const maxX = Math.max(...nodeXs);
-        const xShift = Math.max(0, 140 - minX);
+        const xShift = Math.max(0, 220 - minX);
         if (xShift > 0) {
           Object.keys(pos).forEach((id) => {
             pos[id].x += xShift;
           });
         }
         const shiftedMaxX = Math.max(...Object.values(pos).map((p) => p.x));
-        const width = Math.max(1180, shiftedMaxX + NODE_W / 2 + 140);
+        const width = Math.max(1280, shiftedMaxX + NODE_W / 2 + 180);
         const height = Math.max(760, topPad * 2 + (maxDepth + 1) * rowGap + NODE_H);
         return { width, height, pos, nodes, edges, layoutMeta: { level: depth } };
       }
@@ -815,8 +834,8 @@
         const nodes = subgraph?.persons || [];
         const edges = subgraph?.relationships || [];
         if (!nodes.length) return { width: 1100, height: 760, pos: {}, nodes, edges, layoutMeta: {} };
-        const NODE_H = 132;
-        const NODE_W = 236;
+        const NODE_H = 152;
+        const NODE_W = 312;
         const byId = {};
         nodes.forEach((n) => { byId[n.id] = n; });
         const parentEdges = normalizeParentEdges(edges).filter(([p, c]) => byId[p] && byId[c]);
@@ -849,9 +868,9 @@
         const maxYear = allYears.length ? Math.max(...allYears) : minYear + 40;
         const spanYears = Math.max(1, maxYear - minYear);
 
-        const rowGap = 228;
-        const xGap = 278;
-        const leftPad = 180;
+        const rowGap = 244;
+        const xGap = 356;
+        const leftPad = 280;
         const topPad = 72;
         const pos = {};
         const depth = {};
@@ -985,7 +1004,7 @@
           if (rowNodeIds.length < 2) return;
           const sorted = rowNodeIds.slice().sort((a, b) => pos[a].x - pos[b].x);
           const originalCenter = sorted.reduce((sum, id) => sum + pos[id].x, 0) / sorted.length;
-          const minGap = 256;
+          const minGap = 334;
           for (let i = 1; i < sorted.length; i += 1) {
             const prev = sorted[i - 1];
             const cur = sorted[i];
@@ -1006,14 +1025,14 @@
         const nodeXs = Object.values(pos).map((p) => p.x);
         const minX = Math.min(...nodeXs);
         const maxX = Math.max(...nodeXs);
-        const xShift = Math.max(0, 140 - minX);
+        const xShift = Math.max(0, 220 - minX);
         if (xShift > 0) {
           Object.keys(pos).forEach((id) => {
             pos[id].x += xShift;
           });
         }
         const shiftedMaxX = Math.max(...Object.values(pos).map((p) => p.x));
-        const width = Math.max(1180, shiftedMaxX + NODE_W / 2 + 140);
+        const width = Math.max(1280, shiftedMaxX + NODE_W / 2 + 180);
         const eventLaneX = 0;
         const yForYear = (year, yMin, yMax) => {
           const ratio = (year - minYear) / spanYears;
@@ -1124,8 +1143,8 @@
         const names = {};
         nodes.forEach((n) => { names[n.id] = n.full_name; });
         const { undirectedTypes, displayEdges } = normalizeDisplayEdges(edges);
-        const NODE_W = 236;
-        const NODE_H = 132;
+        const NODE_W = 312;
+        const NODE_H = 152;
         const NODE_HALF_W = NODE_W / 2;
         const NODE_HALF_H = NODE_H / 2;
 
@@ -1154,7 +1173,7 @@
                 const yy = band.y;
                 bandLayer
                   .append("line")
-                  .attr("x1", 74)
+                  .attr("x1", 132)
                   .attr("x2", width - 28)
                   .attr("y1", yy)
                   .attr("y2", yy)
@@ -1163,7 +1182,7 @@
                   .attr("stroke-dasharray", "3 7");
                 bandLayer
                   .append("text")
-                  .attr("x", 26)
+                  .attr("x", 14)
                   .attr("y", yy - 8)
                   .attr("font-size", 10)
                   .attr("font-family", "Manrope, sans-serif")
@@ -1173,7 +1192,7 @@
                 if (i === 0) {
                   bandLayer
                     .append("text")
-                    .attr("x", 26)
+                    .attr("x", 14)
                     .attr("y", 22)
                     .attr("font-size", 11)
                     .attr("font-family", "Manrope, sans-serif")
@@ -1422,10 +1441,10 @@
               const isRoot = node.id === rootPersonId;
               const isSelected = node.id === selectedNodeId;
               const isHighlighted = highlightedNodeIds.has(node.id);
-              const fill = isRoot ? "var(--accent)" : isSelected ? "#fde7c4" : isHighlighted ? "#f8eee1" : "#ffffff";
-              const stroke = isRoot ? "var(--accent)" : isSelected ? "#c98a39" : isHighlighted ? "#d7b07b" : "#9eb1bf";
-              const textColor = isRoot ? "#ffffff" : "#2b3641";
-              const subtitleColor = isRoot ? "rgba(255,255,255,0.85)" : "#6a7988";
+              const fill = isSelected ? "#fffaf2" : "#ffffff";
+              const stroke = isRoot ? "#6f7fbe" : isSelected ? "#d59d56" : isHighlighted ? "#d7b07b" : "#aebac6";
+              const textColor = "#24317d";
+              const subtitleColor = "#6a7988";
               const name = names[node.id] || node.id.slice(0, 8);
               const words = name.split(/\s+/).filter(Boolean);
               const line1 = words.slice(0, 2).join(" ");
@@ -1434,29 +1453,30 @@
               const badge = (node.occupation || node.religion || "ancestor").slice(0, 20);
               const g = nodeLayer.append("g").style("cursor", "pointer").datum(node);
               const level = layoutMeta && layoutMeta.level ? (layoutMeta.level[node.id] || 0) : 0;
-              const introOffset = layoutMode === "time_aligned" ? Math.max(-20, Math.min(24, level * 8)) : 0;
+              const introOffset = layoutMode === "time_aligned" ? Math.max(-8, Math.min(10, level * 3)) : 0;
               g.style("opacity", 0).attr("transform", `translate(0, ${introOffset})`);
               g.append("rect")
                 .attr("x", p.x - NODE_HALF_W)
                 .attr("y", p.y)
                 .attr("width", NODE_W)
                 .attr("height", NODE_H)
-                .attr("rx", 20)
+                .attr("rx", 14)
                 .attr("fill", fill)
                 .attr("stroke", stroke)
-                .attr("stroke-width", isSelected ? 3 : 2);
+                .attr("stroke-width", isSelected ? 2.2 : 1.8)
+                .style("filter", "drop-shadow(0 32px 48px rgba(27, 28, 26, 0.04))");
               const portraitX = p.x - NODE_HALF_W + 12;
-              const portraitY = p.y + 14;
-              const portraitW = 56;
-              const portraitH = 74;
+              const portraitY = p.y + 10;
+              const portraitW = 92;
+              const portraitH = 126;
               g.append("rect")
                 .attr("x", portraitX)
                 .attr("y", portraitY)
                 .attr("width", portraitW)
                 .attr("height", portraitH)
                 .attr("rx", 8)
-                .attr("fill", isRoot ? "rgba(255,255,255,0.2)" : "#d5d2cc")
-                .attr("stroke", isRoot ? "rgba(255,255,255,0.35)" : "#c4c6cd")
+                .attr("fill", "#d5d2cc")
+                .attr("stroke", "#c4c6cd")
                 .attr("stroke-width", 1);
               const previewUrl = mediaPreviewByPersonId && mediaPreviewByPersonId[node.id];
               if (previewUrl) {
@@ -1476,78 +1496,90 @@
                   .attr("height", portraitH)
                   .attr("preserveAspectRatio", "xMidYMid slice")
                   .attr("clip-path", `url(#${clipId})`)
+                  .style("filter", isSelected || isRoot ? "none" : "grayscale(0.95)")
                   .attr("href", previewUrl);
               } else {
                 g.append("text")
-                  .attr("x", p.x - NODE_HALF_W + 40)
-                  .attr("y", p.y + 58)
+                  .attr("x", p.x - NODE_HALF_W + 58)
+                  .attr("y", p.y + 74)
                   .attr("text-anchor", "middle")
                   .attr("font-size", 11)
                   .attr("font-family", "Manrope, sans-serif")
                   .attr("font-weight", 700)
-                  .attr("fill", isRoot ? "rgba(255,255,255,0.88)" : "#5c6a79")
+                  .attr("fill", "#5c6a79")
                   .text("Portrait");
               }
               g.append("text")
-                .attr("x", p.x - NODE_HALF_W + 80)
-                .attr("y", p.y + 36)
+                .attr("x", p.x - NODE_HALF_W + 118)
+                .attr("y", p.y + 44)
                 .attr("text-anchor", "start")
-                .attr("font-size", 29)
+                .attr("font-size", 23)
                 .attr("font-family", "Newsreader, Georgia, serif")
-                .attr("font-weight", 700)
+                .attr("font-weight", 650)
                 .attr("fill", textColor)
                 .text(line1);
               if (line2) {
                 g.append("text")
-                  .attr("x", p.x - NODE_HALF_W + 80)
-                  .attr("y", p.y + 62)
+                  .attr("x", p.x - NODE_HALF_W + 118)
+                  .attr("y", p.y + 70)
                   .attr("text-anchor", "start")
-                  .attr("font-size", 24)
+                  .attr("font-size", 20)
                   .attr("font-family", "Newsreader, Georgia, serif")
-                  .attr("font-weight", 600)
+                  .attr("font-weight", 650)
                   .attr("fill", textColor)
                   .text(line2);
               }
               g.append("text")
-                .attr("x", p.x - NODE_HALF_W + 80)
-                .attr("y", p.y + 84)
+                .attr("x", p.x - NODE_HALF_W + 118)
+                .attr("y", p.y + 96)
                 .attr("text-anchor", "start")
-                .attr("font-size", 12)
+                .attr("font-size", 11.5)
                 .attr("font-family", "Manrope, sans-serif")
                 .attr("font-weight", 700)
-                .attr("fill", subtitleColor)
+                .attr("fill", "#a04100")
                 .text(years);
               g.append("text")
-                .attr("x", p.x - NODE_HALF_W + 80)
-                .attr("y", p.y + 104)
+                .attr("x", p.x - NODE_HALF_W + 118)
+                .attr("y", p.y + 117)
                 .attr("text-anchor", "start")
-                .attr("font-size", 11)
+                .attr("font-size", 11.5)
                 .attr("font-family", "Manrope, sans-serif")
                 .attr("fill", subtitleColor)
                 .text((node.birth_place || "Birthplace unknown").slice(0, 30));
+              const blurb = (node.personality || node.hobbies || node.occupation || "").slice(0, 42);
+              if (blurb) {
+                g.append("text")
+                  .attr("x", p.x - NODE_HALF_W + 118)
+                  .attr("y", p.y + 138)
+                  .attr("text-anchor", "start")
+                  .attr("font-size", 10.5)
+                  .attr("font-family", "Manrope, sans-serif")
+                  .attr("fill", "#728091")
+                  .text(blurb);
+              }
               const badgeW = Math.max(48, Math.min(96, badge.length * 6 + 16));
               g.append("rect")
                 .attr("x", p.x + NODE_HALF_W - badgeW - 12)
                 .attr("y", p.y + 12)
                 .attr("width", badgeW)
-                .attr("height", 18)
-                .attr("rx", 10)
-                .attr("fill", isRoot ? "rgba(255, 219, 204, 0.25)" : "rgba(255, 219, 204, 0.75)");
+                .attr("height", 17)
+                .attr("rx", 5)
+                .attr("fill", "rgba(255, 219, 204, 0.86)");
               g.append("text")
                 .attr("x", p.x + NODE_HALF_W - badgeW / 2 - 12)
-                .attr("y", p.y + 25)
+                .attr("y", p.y + 24)
                 .attr("text-anchor", "middle")
-                .attr("font-size", 10)
+                .attr("font-size", 9.5)
                 .attr("font-family", "Manrope, sans-serif")
                 .attr("font-weight", 700)
-                .attr("fill", isRoot ? "rgba(255,255,255,0.9)" : "#7a3000")
+                .attr("fill", "#7a3000")
                 .text(badge);
               g.on("click", () => onNodeClick(node.id));
               if (shouldAnimateNodes) {
                 g.transition()
-                  .duration(260)
-                  .delay(Math.min(220, idx * 18))
-                  .ease(d3.easeCubicOut)
+                  .duration(620)
+                  .delay(Math.min(360, idx * 26))
+                  .ease(d3.easeCubicInOut)
                   .style("opacity", 1)
                   .attr("transform", "translate(0,0)");
               } else {
@@ -2809,7 +2841,18 @@
                                   )
                                 : [React.createElement("div", { className: "muted", key: "none" }, "Add context events to populate timeline.")])
                           ])
-                        : React.createElement("button", { className: "btn", key: "show-timeline", type: "button", onClick: () => setTimeTimelineOpen(true) }, "Show Timeline"),
+                        : React.createElement(
+                            "button",
+                            {
+                              className: "timeline-reveal-btn",
+                              key: "show-timeline",
+                              type: "button",
+                              onClick: () => setTimeTimelineOpen(true),
+                              title: "Show timeline",
+                              "aria-label": "Show timeline",
+                            },
+                            "▸"
+                          ),
                       React.createElement("div", { className: "time-graph-stage", key: "g" }, [
                         React.createElement(GraphView, {
                           key: "graph",
