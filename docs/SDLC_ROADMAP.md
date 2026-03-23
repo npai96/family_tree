@@ -11,6 +11,19 @@ Use a lightweight release loop:
 - deploy to staging first, then promote to prod
 - always keep a rollback path
 
+## Deployment lane (baked into SDLC, not separate)
+
+Use the deployment assets already in this repo:
+
+- CI: `.github/workflows/ci.yml`
+- CD: `.github/workflows/deploy-aws-ec2.yml`
+- infra/runtime: `Dockerfile`, `docker-compose.prod.yml`, `Caddyfile`
+- setup guide: `docs/DEPLOY_AWS_CHEAP.md`
+
+Solo rule:
+
+- any feature branch is not \"done\" until it passes CI and you have a staging deploy path.
+
 ## Environments (lean)
 
 - `dev`: local machine
@@ -33,6 +46,7 @@ If budget/time is tight, keep `staging` and `prod` only, and use local as `dev`.
 - docs/config notes updated if behavior changed
 - manual smoke flow tested in UI
 - release note written in commit/PR text
+- deployment impact checked (does it need new env vars, ports, secrets, storage, or migrations?)
 
 ## Self-PR checklist (copy/paste template)
 
@@ -46,6 +60,18 @@ If budget/time is tight, keep `staging` and `prod` only, and use local as `dev`.
 
 - 2-3 focused releases per week
 - hotfixes anytime, but always follow with short notes
+
+## Release flow (actual steps)
+
+1. Push branch -> CI green.
+2. Merge to `main`.
+3. CD deploys to AWS instance.
+4. Run smoke checks:
+- `/health`
+- sign in
+- load graph
+- add one person + relationship
+5. If broken, rollback by re-pointing `current` symlink to previous release and rerun compose.
 
 ## Branch/version strategy (simple)
 

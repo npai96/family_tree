@@ -92,3 +92,8 @@ make test
 - API authorization for MVP is simplified via `X-User-Id` header.
 - Media in this increment stores files locally under `app/media/` for localhost testing.
 - Realtime WebSocket features require a websocket backend (`websockets` package included in `requirements.txt`).
+
+## Cheap AWS Deploy + CI/CD
+- CI workflow: `.github/workflows/ci.yml`
+- CD workflow: `.github/workflows/deploy-aws-ec2.yml`
+- Deployment guide: `docs/DEPLOY_AWS_CHEAP.md`

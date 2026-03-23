@@ -11,6 +11,14 @@
 - Realtime: WebSocket channel per circle
 - Tests: `pytest` via `make test`
 
+Deployment assets now present:
+
+- `Dockerfile`
+- `docker-compose.prod.yml`
+- `Caddyfile`
+- GitHub Actions CI/CD workflows under `.github/workflows/`
+- `docs/DEPLOY_AWS_CHEAP.md`
+
 ## What is already drafted for future state
 
 - Postgres schema draft: `db/schema.sql`

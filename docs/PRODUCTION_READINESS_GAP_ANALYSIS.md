@@ -61,6 +61,7 @@ Why it matters:
 Do next:
 
 - CI gates + structured logs + error tracking + basic metrics.
+- complete AWS + GitHub Actions wiring from `docs/DEPLOY_AWS_CHEAP.md` (instance bootstrap, secrets, first deploy, health verification).
 
 ## 6) No explicit performance budgets
 
@@ -88,12 +89,13 @@ Do next:
 
 ## Recommended order (solo-optimized)
 
-1. CI safety rails + logging
-2. Postgres migration
-3. media storage migration
-4. modularization pass
-5. auth hardening + privacy controls
-6. perf/load tuning
+1. AWS deploy foundation + CI/CD wiring
+2. CI safety rails + logging
+3. Postgres migration
+4. media storage migration
+5. modularization pass
+6. auth hardening + privacy controls
+7. perf/load tuning
 
 ## Keep this simple
 
