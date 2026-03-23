@@ -528,6 +528,18 @@
       }
       .time-graph-stage {
         min-width: 0;
+        position: relative;
+      }
+      .time-aligned-shell.timeline-collapsed {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .time-aligned-shell.timeline-collapsed .timeline-reveal-btn {
+        position: absolute;
+        left: 10px;
+        top: 50%;
+        transform: translateY(-50%);
+        margin-top: 0;
+        z-index: 8;
       }
       @media (max-width: 1100px) {
         .shell { grid-template-columns: 1fr !important; height: auto; }
@@ -1172,6 +1184,8 @@
         const hasData = Boolean(subgraph && subgraph.persons && subgraph.persons.length);
         const safeSubgraph = hasData ? subgraph : { persons: [], relationships: [] };
         const { width, height, pos, nodes, edges, layoutMeta } = computeGraphLayout(safeSubgraph, rootPersonId, layoutMode, contextEvents);
+        const CANVAS_PAD_X = 220;
+        const CANVAS_PAD_Y = 260;
         const names = {};
         nodes.forEach((n) => { names[n.id] = n.full_name; });
         const { undirectedTypes, displayEdges } = normalizeDisplayEdges(edges);
@@ -1185,7 +1199,8 @@
           const svg = d3.select(svgRef.current);
           svg.selectAll("*").remove();
 
-          const stage = svg.append("g");
+          const camera = svg.append("g");
+          const stage = camera.append("g").attr("transform", `translate(${CANVAS_PAD_X}, ${CANVAS_PAD_Y})`);
           const root = stage.append("g");
 
           const localPos = {};
@@ -1647,7 +1662,7 @@
             .scaleExtent([0.35, 2.4])
             .on("zoom", (event) => {
               transformRef.current = event.transform;
-              stage.attr("transform", event.transform);
+              camera.attr("transform", event.transform);
             });
           svg.call(zoomBehavior);
 
@@ -1666,8 +1681,8 @@
         return React.createElement("svg", {
           ref: svgRef,
           className: "d3-graph-canvas",
-          width: Math.ceil(width * zoom),
-          height: Math.ceil(height * zoom),
+          width: Math.ceil((width + CANVAS_PAD_X * 2) * zoom),
+          height: Math.ceil((height + CANVAS_PAD_Y * 2) * zoom),
         });
       }
 
@@ -1728,6 +1743,8 @@
         });
         const graphViewportRef = useRef(null);
         const migrationTimerRef = useRef(null);
+        const prevTimeTimelineOpenRef = useRef(true);
+        const pendingTimelineViewportAnchorRef = useRef(null);
 
         const headers = useMemo(() => {
           if (authToken) return { "Content-Type": "application/json", Authorization: `Bearer ${authToken}` };
@@ -1909,6 +1926,17 @@
           setZoom(nextZoom);
           el.scrollTop = 0;
           el.scrollLeft = 0;
+        }
+
+        function setTimeTimelineOpenAnchored(nextOpen) {
+          const viewport = graphViewportRef.current;
+          if (viewport && lastLayoutMode === "time_aligned") {
+            pendingTimelineViewportAnchorRef.current = {
+              centerX: viewport.scrollLeft + viewport.clientWidth / 2,
+              centerY: viewport.scrollTop + viewport.clientHeight / 2,
+            };
+          }
+          setTimeTimelineOpen(nextOpen);
         }
 
         async function loadUsers() {
@@ -2585,6 +2613,28 @@
           };
         }, [isSubgraphMigrationPlaying, subgraphMigrationDates, lastRoot, selectedCircle, lastDirection, lastDepth, lastMode, lastLateralTypes, lastLateralDepth]);
 
+        useEffect(() => {
+          const viewport = graphViewportRef.current;
+          if (!viewport || lastLayoutMode !== "time_aligned") {
+            prevTimeTimelineOpenRef.current = timeTimelineOpen;
+            return;
+          }
+          const wasOpen = prevTimeTimelineOpenRef.current;
+          if (wasOpen === timeTimelineOpen) return;
+          const anchor = pendingTimelineViewportAnchorRef.current;
+          const applyAnchor = () => {
+            if (!anchor) return;
+            viewport.scrollLeft = Math.max(0, anchor.centerX - viewport.clientWidth / 2);
+            viewport.scrollTop = Math.max(0, anchor.centerY - viewport.clientHeight / 2);
+          };
+          window.requestAnimationFrame(() => {
+            applyAnchor();
+            window.requestAnimationFrame(applyAnchor);
+          });
+          pendingTimelineViewportAnchorRef.current = null;
+          prevTimeTimelineOpenRef.current = timeTimelineOpen;
+        }, [timeTimelineOpen, lastLayoutMode]);
+
         const gridCols = `${leftOpen ? "320px" : "44px"} 1fr ${rightOpen ? "340px" : "44px"}`;
 
         return React.createElement(React.Fragment, null, [
@@ -2857,12 +2907,12 @@
                   ])
                 ]),
                 lastLayoutMode === "time_aligned"
-                  ? React.createElement("section", { className: "time-aligned-shell", key: "time-shell" }, [
+                  ? React.createElement("section", { className: `time-aligned-shell ${timeTimelineOpen ? "" : "timeline-collapsed"}`.trim(), key: "time-shell" }, [
                       timeTimelineOpen
                         ? React.createElement("aside", { className: "historical-panel", key: "timeline" }, [
                             React.createElement("div", { className: "historical-panel-head", key: "h" }, [
                               React.createElement("div", { className: "historical-panel-title", key: "t" }, "Historical Tapestry"),
-                              React.createElement("button", { className: "btn", key: "c", type: "button", onClick: () => setTimeTimelineOpen(false) }, "Hide"),
+                              React.createElement("button", { className: "btn", key: "c", type: "button", onClick: () => setTimeTimelineOpenAnchored(false) }, "Hide"),
                             ]),
                             React.createElement("div", { className: "historical-list", key: "lst" },
                               historicalTimelineItems.length
@@ -2881,19 +2931,22 @@
                                   )
                                 : [React.createElement("div", { className: "muted", key: "none" }, "Add context events to populate timeline.")])
                           ])
-                        : React.createElement(
-                            "button",
-                            {
-                              className: "timeline-reveal-btn",
-                              key: "show-timeline",
-                              type: "button",
-                              onClick: () => setTimeTimelineOpen(true),
-                              title: "Show timeline",
-                              "aria-label": "Show timeline",
-                            },
-                            "▸"
-                          ),
+                        : null,
                       React.createElement("div", { className: "time-graph-stage", key: "g" }, [
+                        !timeTimelineOpen
+                          ? React.createElement(
+                              "button",
+                              {
+                                className: "timeline-reveal-btn",
+                                key: "show-timeline",
+                                type: "button",
+                                onClick: () => setTimeTimelineOpenAnchored(true),
+                                title: "Show timeline",
+                                "aria-label": "Show timeline",
+                              },
+                              "▸"
+                            )
+                          : null,
                         React.createElement(GraphView, {
                           key: "graph",
                           subgraph,
