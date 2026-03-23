@@ -17,9 +17,11 @@ jobs:
       - name: Create release tarball
         run: |
           ARCHIVE_PATH="$GITHUB_WORKSPACE/family-tree-release.tgz"
+          rm -f "$ARCHIVE_PATH"
           tar --exclude='.git' \
               --exclude='.venv' \
               --exclude='.pytest_cache' \
+              --exclude='family-tree-release.tgz' \
               --exclude='ui_mockups' \
               -czf "$ARCHIVE_PATH" .
           ls -lh "$ARCHIVE_PATH"
