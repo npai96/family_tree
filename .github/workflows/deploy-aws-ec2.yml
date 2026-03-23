@@ -16,12 +16,13 @@ jobs:
 
       - name: Create release tarball
         run: |
-          ARCHIVE_PATH="/tmp/family-tree-release.tgz"
+          ARCHIVE_PATH="$GITHUB_WORKSPACE/family-tree-release.tgz"
           tar --exclude='.git' \
               --exclude='.venv' \
               --exclude='.pytest_cache' \
               --exclude='ui_mockups' \
               -czf "$ARCHIVE_PATH" .
+          ls -lh "$ARCHIVE_PATH"
 
       - name: Upload release tarball to server
         uses: appleboy/scp-action@v0.1.7
@@ -29,7 +30,7 @@ jobs:
           host: ${{ secrets.AWS_EC2_HOST }}
           username: ${{ secrets.AWS_EC2_USER }}
           key: ${{ secrets.AWS_EC2_SSH_KEY }}
-          source: /tmp/family-tree-release.tgz
+          source: family-tree-release.tgz
           target: /tmp
           strip_components: 0
 
