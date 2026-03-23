@@ -28,6 +28,25 @@ jobs:
           cp "$ARCHIVE_PATH" "$WORKSPACE_ARCHIVE"
           ls -lh "$ARCHIVE_PATH" "$WORKSPACE_ARCHIVE"
 
+      - name: Check SSH reachability
+        env:
+          HOST: ${{ secrets.AWS_EC2_HOST }}
+        run: |
+          python - <<'PY'
+          import os
+          import socket
+          import sys
+
+          host = os.environ["HOST"]
+          try:
+              with socket.create_connection((host, 22), timeout=15):
+                  print(f"SSH reachable on {host}:22")
+          except OSError as exc:
+              print(f"Cannot reach {host}:22 from this GitHub runner: {exc}", file=sys.stderr)
+              print("Check the EC2 security group, NACL, host value, and public IP/DNS.", file=sys.stderr)
+              sys.exit(1)
+          PY
+
       - name: Upload release tarball to server
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -37,6 +56,8 @@ jobs:
           source: family-tree-release.tgz
           target: /tmp
           strip_components: 0
+          timeout: 2m
+          command_timeout: 15m
 
       - name: Deploy on server
         uses: appleboy/ssh-action@v1.0.3
@@ -44,6 +65,8 @@ jobs:
           host: ${{ secrets.AWS_EC2_HOST }}
           username: ${{ secrets.AWS_EC2_USER }}
           key: ${{ secrets.AWS_EC2_SSH_KEY }}
+          timeout: 2m
+          command_timeout: 15m
           script: |
             set -euo pipefail
             if ! command -v docker >/dev/null 2>&1; then

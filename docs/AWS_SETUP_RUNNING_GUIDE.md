@@ -28,10 +28,13 @@ In AWS Console:
 4. Instance type: `t2.micro` (or `t3.micro` if eligible)
 5. Key pair: create/select one and download PEM
 6. Security group inbound rules:
-   - SSH (22) from your IP
+   - SSH (22) from your IP for manual admin access
+   - If GitHub Actions will deploy over SSH, port 22 must also be reachable from GitHub-hosted runners
    - HTTP (80) from `0.0.0.0/0`
    - HTTPS (443) from `0.0.0.0/0`
 7. Launch
+
+For the first deployment, the simplest path is to temporarily allow `SSH (22)` from `0.0.0.0/0`, confirm the workflow works, then tighten access later. If you leave port 22 open broadly, rely on SSH keys only, disable password auth, and keep the key secret.
 
 ---
 
@@ -59,6 +62,11 @@ If connection fails, check:
 - security group SSH rule
 - PEM path/permissions
 - correct user (`ubuntu` for Ubuntu AMI)
+
+If local SSH works but GitHub Actions times out, the server is almost always reachable from your laptop but not from GitHub's runners. That points to one of:
+- EC2 security group only allows your IP
+- network ACL blocks inbound port `22`
+- `AWS_EC2_HOST` points to the wrong host, private IP, or stale public IP
 
 ---
 
@@ -191,7 +199,9 @@ Production upgrades:
 
 ## 1) GitHub deploy fails with SSH error
 - verify `AWS_EC2_HOST`, `AWS_EC2_USER`, `AWS_EC2_SSH_KEY`
-- ensure instance security group allows SSH from GitHub Actions IP ranges (or temporarily open for testing)
+- ensure the instance has a public IP or Elastic IP and `AWS_EC2_HOST` uses that public address or DNS
+- ensure instance security group allows SSH from GitHub Actions IP ranges, or temporarily open `22` to `0.0.0.0/0` for testing
+- if the workflow says it cannot reach `<host>:22`, this is a network reachability problem, not an SSH key problem
 
 ## 2) Container runs but app unreachable
 - check security group inbound 80/443
@@ -212,4 +222,3 @@ Production upgrades:
 - `docs/TEMP_WORKAROUNDS_AND_PROD_UPGRADE.md`
 - `.github/workflows/ci.yml`
 - `.github/workflows/deploy-aws-ec2.yml`
-
