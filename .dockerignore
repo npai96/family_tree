@@ -1,0 +1,9 @@
+.git
+.gitignore
+.venv
+.pytest_cache
+__pycache__
+*.pyc
+app/api/mvp.db
+app/media
+ui_mockups

@@ -1,0 +1,63 @@
+name: Deploy to AWS EC2
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create release tarball
+        run: |
+          tar --exclude='.git' \
+              --exclude='.venv' \
+              --exclude='.pytest_cache' \
+              --exclude='ui_mockups' \
+              -czf family-tree-release.tgz .
+
+      - name: Upload release tarball to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.AWS_EC2_HOST }}
+          username: ${{ secrets.AWS_EC2_USER }}
+          key: ${{ secrets.AWS_EC2_SSH_KEY }}
+          source: family-tree-release.tgz
+          target: /tmp
+          strip_components: 0
+
+      - name: Deploy on server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.AWS_EC2_HOST }}
+          username: ${{ secrets.AWS_EC2_USER }}
+          key: ${{ secrets.AWS_EC2_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            if ! command -v docker >/dev/null 2>&1; then
+              echo "Docker not found. Run deploy/ec2/bootstrap.sh on server first."
+              exit 1
+            fi
+            mkdir -p "$HOME/apps/family_tree"
+            mkdir -p "$HOME/family_tree_data/data"
+            mkdir -p "$HOME/family_tree_data/media"
+            cd "$HOME/apps/family_tree"
+            RELEASE_SHA="${{ github.sha }}"
+            mkdir -p "$HOME/apps/family_tree/releases/$RELEASE_SHA"
+            tar -xzf /tmp/family-tree-release.tgz -C "$HOME/apps/family_tree/releases/$RELEASE_SHA"
+            ln -sfn "$HOME/apps/family_tree/releases/$RELEASE_SHA" "$HOME/apps/family_tree/current"
+            {
+              echo "DOMAIN=${{ secrets.APP_DOMAIN }}"
+              echo "ALLOW_LEGACY_X_USER_ID=false"
+              echo "DATA_DIR=$HOME/family_tree_data/data"
+              echo "MEDIA_DIR=$HOME/family_tree_data/media"
+            } > "$HOME/apps/family_tree/current/.env"
+            cd "$HOME/apps/family_tree/current"
+            docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
+            docker compose -f docker-compose.prod.yml ps
