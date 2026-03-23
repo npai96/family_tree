@@ -242,15 +242,42 @@
       }
       .status-badge {
         position: absolute;
-        top: 10px;
-        left: 10px;
-        z-index: 10;
-        font-size: 15px;
+        top: 72px;
+        right: 14px;
+        z-index: 6;
+        font-size: 13px;
         color: #1b5156;
-        background: rgba(215, 233, 228, 0.9);
-        border: 1px solid rgba(144, 188, 177, 0.7);
+        background: rgba(215, 233, 228, 0.84);
+        border: 1px solid rgba(144, 188, 177, 0.55);
         border-radius: 999px;
-        padding: 8px 14px;
+        padding: 7px 12px;
+        max-width: min(52vw, 420px);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        pointer-events: none;
+      }
+      .auth-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+      .auth-btn {
+        width: 100%;
+        border-radius: 14px;
+        padding: 9px 10px;
+        font-size: 13px;
+        font-weight: 700;
+      }
+      .auth-btn-in {
+        background: linear-gradient(135deg, rgba(17, 26, 119, 0.95) 0%, rgba(43, 52, 141, 0.95) 100%);
+        color: #ffffff;
+      }
+      .auth-btn-out {
+        background: rgba(255, 255, 255, 0.9);
+        color: #4f6273;
+        border: 1px solid rgba(196, 198, 205, 0.6);
       }
       .graph-scroll {
         height: 100%;
@@ -507,6 +534,11 @@
         .sidebar { max-height: 380px; }
         .graph-wrap { height: 70vh; }
         .title { font-size: 28px; }
+        .status-badge {
+          top: 86px;
+          right: 10px;
+          max-width: 84vw;
+        }
         .lineage-journey-rail::before { left: 16px; transform: none; }
         .journey-row { grid-template-columns: 32px 1fr; }
         .journey-person, .journey-context, .journey-row.flip .journey-person, .journey-row.flip .journey-context {
@@ -2588,18 +2620,26 @@
                     [React.createElement("option", { key: "x", value: "" }, "Select user")]
                       .concat(userOptions.map((u) => React.createElement("option", { key: u.value, value: u.value }, u.label)))
                   ),
-                  React.createElement("button", { key: "signin", type: "button", className: "ghost", onClick: () => loginAsActiveUser().catch((x) => setStatus(x.message)), disabled: !activeUserId }, "Sign In"),
-                  React.createElement("button", {
-                    key: "signout",
-                    type: "button",
-                    className: "ghost",
-                    onClick: () => {
-                      setToken("");
-                      setActiveUserId("");
-                      localStorage.removeItem("activeUserId");
-                      setStatus("Signed out");
-                    }
-                  }, "Sign Out"),
+                  React.createElement("div", { className: "auth-row", key: "auth-row" }, [
+                    React.createElement("button", {
+                      key: "signin",
+                      type: "button",
+                      className: "auth-btn auth-btn-in",
+                      onClick: () => loginAsActiveUser().catch((x) => setStatus(x.message)),
+                      disabled: !activeUserId,
+                    }, "Sign In"),
+                    React.createElement("button", {
+                      key: "signout",
+                      type: "button",
+                      className: "auth-btn auth-btn-out",
+                      onClick: () => {
+                        setToken("");
+                        setActiveUserId("");
+                        localStorage.removeItem("activeUserId");
+                        setStatus("Signed out");
+                      }
+                    }, "Sign Out"),
+                  ]),
                   React.createElement("form", { key: "f2", onSubmit: (e) => createCircle(e).catch((x) => setStatus(x.message)) }, [
                     React.createElement("input", { key: "i2", name: "name", required: true, placeholder: "New circle name" }),
                     React.createElement("button", { key: "b2", type: "submit" }, "Create Circle"),
