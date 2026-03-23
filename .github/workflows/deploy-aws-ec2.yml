@@ -16,15 +16,17 @@ jobs:
 
       - name: Create release tarball
         run: |
-          ARCHIVE_PATH="$GITHUB_WORKSPACE/family-tree-release.tgz"
-          rm -f "$ARCHIVE_PATH"
+          ARCHIVE_PATH="/tmp/family-tree-release.tgz"
+          WORKSPACE_ARCHIVE="$GITHUB_WORKSPACE/family-tree-release.tgz"
+          rm -f "$ARCHIVE_PATH" "$WORKSPACE_ARCHIVE"
           tar --exclude='.git' \
               --exclude='.venv' \
               --exclude='.pytest_cache' \
               --exclude='family-tree-release.tgz' \
               --exclude='ui_mockups' \
               -czf "$ARCHIVE_PATH" .
-          ls -lh "$ARCHIVE_PATH"
+          cp "$ARCHIVE_PATH" "$WORKSPACE_ARCHIVE"
+          ls -lh "$ARCHIVE_PATH" "$WORKSPACE_ARCHIVE"
 
       - name: Upload release tarball to server
         uses: appleboy/scp-action@v0.1.7
