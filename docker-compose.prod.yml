@@ -1,8 +1,6 @@
 services:
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: "${APP_IMAGE}"
     environment:
       ALLOW_LEGACY_X_USER_ID: "${ALLOW_LEGACY_X_USER_ID:-false}"
     volumes:

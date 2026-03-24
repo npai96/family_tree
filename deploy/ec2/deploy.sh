@@ -1,34 +1,48 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 2 ]]; then
-  echo "Usage: deploy.sh <release_sha> <domain>"
+if [[ $# -lt 3 ]]; then
+  echo "Usage: deploy.sh <release_sha> <domain> <app_image>"
   exit 1
 fi
 
 RELEASE_SHA="$1"
 DOMAIN="$2"
+APP_IMAGE="$3"
 
 APP_ROOT="$HOME/apps/family_tree"
 RELEASE_DIR="$APP_ROOT/releases/$RELEASE_SHA"
 CURRENT_DIR="$APP_ROOT/current"
-ARCHIVE_PATH="/tmp/family-tree-release.tgz"
+CONFIG_ARCHIVE_PATH="/tmp/family-tree-config.tgz"
+IMAGE_ARCHIVE_PATH="/tmp/family-tree-image.tar"
 DATA_DIR="$HOME/family_tree_data/data"
 MEDIA_DIR="$HOME/family_tree_data/media"
 
 mkdir -p "$RELEASE_DIR" "$DATA_DIR" "$MEDIA_DIR"
 
-tar -xzf "$ARCHIVE_PATH" -C "$RELEASE_DIR"
+if [[ ! -f "$CONFIG_ARCHIVE_PATH" ]]; then
+  echo "Missing config archive at $CONFIG_ARCHIVE_PATH"
+  exit 1
+fi
+
+if [[ ! -f "$IMAGE_ARCHIVE_PATH" ]]; then
+  echo "Missing image archive at $IMAGE_ARCHIVE_PATH"
+  exit 1
+fi
+
+tar -xzf "$CONFIG_ARCHIVE_PATH" -C "$RELEASE_DIR"
 ln -sfn "$RELEASE_DIR" "$CURRENT_DIR"
+
+docker load -i "$IMAGE_ARCHIVE_PATH"
 
 cat > "$CURRENT_DIR/.env" <<ENVVARS
 DOMAIN=$DOMAIN
+APP_IMAGE=$APP_IMAGE
 ALLOW_LEGACY_X_USER_ID=false
 DATA_DIR=$DATA_DIR
 MEDIA_DIR=$MEDIA_DIR
 ENVVARS
 
 cd "$CURRENT_DIR"
-docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
-
+docker compose -f docker-compose.prod.yml up -d --remove-orphans
 docker compose -f docker-compose.prod.yml ps

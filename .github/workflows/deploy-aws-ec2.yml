@@ -2,31 +2,40 @@ name: Deploy to AWS EC2
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
 
 jobs:
   deploy:
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    env:
+      APP_IMAGE: family-tree:${{ github.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Create release tarball
+      - name: Build application image
         run: |
-          ARCHIVE_PATH="/tmp/family-tree-release.tgz"
-          WORKSPACE_ARCHIVE="$GITHUB_WORKSPACE/family-tree-release.tgz"
-          rm -f "$ARCHIVE_PATH" "$WORKSPACE_ARCHIVE"
-          tar --exclude='.git' \
-              --exclude='.venv' \
-              --exclude='.pytest_cache' \
-              --exclude='family-tree-release.tgz' \
-              --exclude='ui_mockups' \
-              -czf "$ARCHIVE_PATH" .
-          cp "$ARCHIVE_PATH" "$WORKSPACE_ARCHIVE"
-          ls -lh "$ARCHIVE_PATH" "$WORKSPACE_ARCHIVE"
+          docker build -t "$APP_IMAGE" .
+
+      - name: Export application image
+        run: |
+          IMAGE_ARCHIVE="/tmp/family-tree-image.tar"
+          WORKSPACE_IMAGE_ARCHIVE="$GITHUB_WORKSPACE/family-tree-image.tar"
+          rm -f "$IMAGE_ARCHIVE" "$WORKSPACE_IMAGE_ARCHIVE"
+          docker save -o "$IMAGE_ARCHIVE" "$APP_IMAGE"
+          cp "$IMAGE_ARCHIVE" "$WORKSPACE_IMAGE_ARCHIVE"
+          ls -lh "$IMAGE_ARCHIVE" "$WORKSPACE_IMAGE_ARCHIVE"
+
+      - name: Create deploy config bundle
+        run: |
+          CONFIG_ARCHIVE="/tmp/family-tree-config.tgz"
+          WORKSPACE_CONFIG_ARCHIVE="$GITHUB_WORKSPACE/family-tree-config.tgz"
+          rm -f "$CONFIG_ARCHIVE" "$WORKSPACE_CONFIG_ARCHIVE"
+          tar -czf "$CONFIG_ARCHIVE" \
+            Caddyfile \
+            docker-compose.prod.yml \
+            deploy/ec2/deploy.sh
+          cp "$CONFIG_ARCHIVE" "$WORKSPACE_CONFIG_ARCHIVE"
+          ls -lh "$CONFIG_ARCHIVE" "$WORKSPACE_CONFIG_ARCHIVE"
 
       - name: Check SSH reachability
         env:
@@ -47,17 +56,17 @@ jobs:
               sys.exit(1)
           PY
 
-      - name: Upload release tarball to server
+      - name: Upload deploy artifacts to server
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.AWS_EC2_HOST }}
           username: ${{ secrets.AWS_EC2_USER }}
           key: ${{ secrets.AWS_EC2_SSH_KEY }}
-          source: family-tree-release.tgz
+          source: family-tree-config.tgz,family-tree-image.tar
           target: /tmp
           strip_components: 0
           timeout: 2m
-          command_timeout: 15m
+          command_timeout: 30m
 
       - name: Deploy on server
         uses: appleboy/ssh-action@v1.0.3
@@ -76,17 +85,11 @@ jobs:
             mkdir -p "$HOME/apps/family_tree"
             mkdir -p "$HOME/family_tree_data/data"
             mkdir -p "$HOME/family_tree_data/media"
-            cd "$HOME/apps/family_tree"
             RELEASE_SHA="${{ github.sha }}"
-            mkdir -p "$HOME/apps/family_tree/releases/$RELEASE_SHA"
-            tar -xzf /tmp/family-tree-release.tgz -C "$HOME/apps/family_tree/releases/$RELEASE_SHA"
-            ln -sfn "$HOME/apps/family_tree/releases/$RELEASE_SHA" "$HOME/apps/family_tree/current"
-            {
-              echo "DOMAIN=${{ secrets.APP_DOMAIN }}"
-              echo "ALLOW_LEGACY_X_USER_ID=false"
-              echo "DATA_DIR=$HOME/family_tree_data/data"
-              echo "MEDIA_DIR=$HOME/family_tree_data/media"
-            } > "$HOME/apps/family_tree/current/.env"
-            cd "$HOME/apps/family_tree/current"
-            docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
-            docker compose -f docker-compose.prod.yml ps
+            APP_IMAGE="family-tree:${{ github.sha }}"
+            tar -xzf /tmp/family-tree-config.tgz -C "$HOME/apps/family_tree"
+            chmod +x "$HOME/apps/family_tree/deploy/ec2/deploy.sh"
+            "$HOME/apps/family_tree/deploy/ec2/deploy.sh" \
+              "$RELEASE_SHA" \
+              "${{ secrets.APP_DOMAIN }}" \
+              "$APP_IMAGE"
