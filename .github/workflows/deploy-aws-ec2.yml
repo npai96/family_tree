@@ -23,6 +23,7 @@ jobs:
           rm -f "$IMAGE_ARCHIVE" "$WORKSPACE_IMAGE_ARCHIVE"
           docker save -o "$IMAGE_ARCHIVE" "$APP_IMAGE"
           cp "$IMAGE_ARCHIVE" "$WORKSPACE_IMAGE_ARCHIVE"
+          chmod 0644 "$IMAGE_ARCHIVE" "$WORKSPACE_IMAGE_ARCHIVE"
           ls -lh "$IMAGE_ARCHIVE" "$WORKSPACE_IMAGE_ARCHIVE"
 
       - name: Create deploy config bundle
@@ -35,6 +36,7 @@ jobs:
             docker-compose.prod.yml \
             deploy/ec2/deploy.sh
           cp "$CONFIG_ARCHIVE" "$WORKSPACE_CONFIG_ARCHIVE"
+          chmod 0644 "$CONFIG_ARCHIVE" "$WORKSPACE_CONFIG_ARCHIVE"
           ls -lh "$CONFIG_ARCHIVE" "$WORKSPACE_CONFIG_ARCHIVE"
 
       - name: Check SSH reachability
