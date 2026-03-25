@@ -20,9 +20,9 @@ from pydantic import BaseModel, Field
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-DB_PATH = BASE_DIR / "app" / "api" / "mvp.db"
+DB_PATH = Path(os.getenv("DB_PATH", str(BASE_DIR / "app" / "api" / "mvp.db")))
 WEB_INDEX_PATH = BASE_DIR / "app" / "web" / "index.html"
-MEDIA_DIR = BASE_DIR / "app" / "media"
+MEDIA_DIR = Path(os.getenv("MEDIA_DIR", str(BASE_DIR / "app" / "media")))
 ALLOW_LEGACY_X_USER_ID = os.getenv("ALLOW_LEGACY_X_USER_ID", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 

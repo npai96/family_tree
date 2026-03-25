@@ -3,8 +3,10 @@ services:
     image: "${APP_IMAGE}"
     environment:
       ALLOW_LEGACY_X_USER_ID: "${ALLOW_LEGACY_X_USER_ID:-false}"
+      DB_PATH: /data/mvp.db
+      MEDIA_DIR: /app/app/media
     volumes:
-      - "${DATA_DIR}/mvp.db:/app/app/api/mvp.db"
+      - "${DATA_DIR}:/data"
       - "${MEDIA_DIR}:/app/app/media"
     expose:
       - "8000"

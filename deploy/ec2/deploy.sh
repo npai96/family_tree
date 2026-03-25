@@ -20,6 +20,11 @@ MEDIA_DIR="$HOME/family_tree_data/media"
 
 mkdir -p "$RELEASE_DIR" "$DATA_DIR" "$MEDIA_DIR"
 
+if [[ -d "$DATA_DIR/mvp.db" ]]; then
+  echo "Found directory at $DATA_DIR/mvp.db from older bind-mount behavior; removing it so SQLite can create a file."
+  rmdir "$DATA_DIR/mvp.db" 2>/dev/null || true
+fi
+
 if [[ ! -f "$CONFIG_ARCHIVE_PATH" ]]; then
   echo "Missing config archive at $CONFIG_ARCHIVE_PATH"
   exit 1
