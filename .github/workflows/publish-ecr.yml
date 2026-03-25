@@ -1,0 +1,59 @@
+name: Publish Image to ECR
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'family-tree' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate AWS workflow configuration
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+
+          required = {
+              "AWS_REGION": os.environ.get("AWS_REGION"),
+              "ECR_REPOSITORY": os.environ.get("ECR_REPOSITORY"),
+          }
+          missing = [name for name, value in required.items() if not value]
+          if missing:
+              print("Missing GitHub repository variables: " + ", ".join(missing), file=sys.stderr)
+              sys.exit(1)
+          PY
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          IMAGE_SHA_TAG="$REGISTRY/$ECR_REPOSITORY:${GITHUB_SHA}"
+          IMAGE_LATEST_TAG="$REGISTRY/$ECR_REPOSITORY:latest"
+          docker build -t "$IMAGE_SHA_TAG" -t "$IMAGE_LATEST_TAG" .
+          docker push "$IMAGE_SHA_TAG"
+          docker push "$IMAGE_LATEST_TAG"
+          {
+            echo "Published image tags:"
+            echo "- $IMAGE_SHA_TAG"
+            echo "- $IMAGE_LATEST_TAG"
+          } >> "$GITHUB_STEP_SUMMARY"

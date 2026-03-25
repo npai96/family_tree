@@ -195,6 +195,91 @@ Production upgrades:
 
 ---
 
+## Step 11: Prepare ECR publishing (next increment)
+
+This is the next infra step after the current manual SSH deploy is working.
+
+Goal:
+
+- GitHub builds the image once
+- GitHub pushes the image to Amazon ECR
+- EC2 later pulls that image instead of receiving image tar files over SSH
+
+Repo assets now available:
+
+- `.github/workflows/publish-ecr.yml`
+- `deploy/ec2/deploy-image.sh`
+
+### 11a. Create an ECR repository
+
+In AWS Console:
+
+1. Go to `ECR` -> `Create repository`
+2. Name: `family-tree`
+3. Visibility: `Private`
+4. Create
+
+### 11b. Create a GitHub Actions IAM role for OIDC
+
+This is the cleanest path because it avoids long-lived AWS access keys in GitHub.
+
+In AWS:
+
+1. Go to `IAM` -> `Identity providers`
+2. Add provider:
+   - provider type: `OpenID Connect`
+   - provider URL: `https://token.actions.githubusercontent.com`
+   - audience: `sts.amazonaws.com`
+3. Go to `IAM` -> `Roles` -> `Create role`
+4. Trusted entity type: `Web identity`
+5. Identity provider: GitHub OIDC provider above
+6. Audience: `sts.amazonaws.com`
+7. Attach permissions:
+   - start with a policy that allows ECR push/pull for the `family-tree` repository
+8. Save the role ARN
+
+### 11c. Add GitHub repo config for ECR publish
+
+In GitHub repo:
+
+`Settings` -> `Secrets and variables` -> `Actions`
+
+Add secret:
+
+- `AWS_GITHUB_ACTIONS_ROLE_ARN`
+  - value: the IAM role ARN from the previous step
+
+Add repository variables:
+
+- `AWS_REGION`
+  - value: your AWS region, for example `ap-southeast-2`
+- `ECR_REPOSITORY`
+  - value: `family-tree`
+
+### 11d. Run the ECR publish workflow
+
+In GitHub:
+
+`Actions` -> `Publish Image to ECR` -> `Run workflow`
+
+Expected result:
+
+- image pushed as:
+  - `<account>.dkr.ecr.<region>.amazonaws.com/family-tree:<git-sha>`
+  - `<account>.dkr.ecr.<region>.amazonaws.com/family-tree:latest`
+
+### 11e. What this does not change yet
+
+This step does **not** remove SSH deploy yet.
+
+For now:
+
+- current deploy workflow is still the working fallback
+- ECR publishing is being added first as a safe intermediate step
+- after ECR push works, next we wire EC2 image pull, then SSM, then remove GitHub SSH deploy
+
+---
+
 ## Common issues
 
 ## 1) GitHub deploy fails with SSH error
@@ -222,3 +307,5 @@ Production upgrades:
 - `docs/TEMP_WORKAROUNDS_AND_PROD_UPGRADE.md`
 - `.github/workflows/ci.yml`
 - `.github/workflows/deploy-aws-ec2.yml`
+- `.github/workflows/publish-ecr.yml`
+- `deploy/ec2/deploy-image.sh`
