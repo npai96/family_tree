@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Ubuntu 22.04+ bootstrap for cheap single-instance deployment
 sudo apt-get update
-sudo apt-get install -y ca-certificates curl gnupg lsb-release
+sudo apt-get install -y ca-certificates curl gnupg lsb-release unzip awscli
 
 if ! command -v docker >/dev/null 2>&1; then
   curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg

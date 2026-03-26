@@ -14,6 +14,8 @@ APP_ROOT="$HOME/apps/family_tree"
 CURRENT_DIR="$APP_ROOT/current"
 DATA_DIR="$HOME/family_tree_data/data"
 MEDIA_DIR="$HOME/family_tree_data/media"
+REGISTRY=""
+AWS_REGION=""
 
 if [[ ! -d "$CURRENT_DIR" ]]; then
   echo "Expected config directory at $CURRENT_DIR"
@@ -26,6 +28,23 @@ mkdir -p "$DATA_DIR" "$MEDIA_DIR"
 if [[ -d "$DATA_DIR/mvp.db" ]]; then
   echo "Found directory at $DATA_DIR/mvp.db from older bind-mount behavior; removing it so SQLite can create a file."
   rmdir "$DATA_DIR/mvp.db" 2>/dev/null || true
+fi
+
+if [[ "$APP_IMAGE" == *.dkr.ecr.*.amazonaws.com/* ]]; then
+  if ! command -v aws >/dev/null 2>&1; then
+    echo "aws CLI is required for ECR-backed deploys. Re-run deploy/ec2/bootstrap.sh on the server."
+    exit 1
+  fi
+
+  REGISTRY="${APP_IMAGE%%/*}"
+  AWS_REGION="$(printf '%s' "$REGISTRY" | awk -F'.' '{print $(NF-2)}')"
+
+  if [[ -z "$AWS_REGION" ]]; then
+    echo "Could not infer AWS region from image reference: $APP_IMAGE"
+    exit 1
+  fi
+
+  aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
 fi
 
 docker pull "$APP_IMAGE"
