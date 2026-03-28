@@ -97,5 +97,6 @@ make test
 - CI workflow: `.github/workflows/ci.yml`
 - CD workflow: `.github/workflows/deploy-aws-ec2.yml`
 - ECR publish workflow: `.github/workflows/publish-ecr.yml`
+- SSM deploy workflow: `.github/workflows/deploy-aws-ssm.yml`
 - Deployment guide: `docs/DEPLOY_AWS_CHEAP.md`
 - Running AWS setup guide: `docs/AWS_SETUP_RUNNING_GUIDE.md`

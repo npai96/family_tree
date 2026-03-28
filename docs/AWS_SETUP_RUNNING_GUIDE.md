@@ -280,6 +280,79 @@ For now:
 
 ---
 
+## Step 12: Prepare SSM-based deploys
+
+This is the step that removes GitHub's deploy dependence on inbound SSH.
+
+Goal:
+
+- GitHub uses AWS OIDC
+- GitHub tells AWS Systems Manager to run the deploy on the EC2 instance
+- EC2 pulls the image from ECR and restarts compose
+- SSH goes back to admin-only use
+
+Repo assets now available:
+
+- `.github/workflows/deploy-aws-ssm.yml`
+- `deploy/ec2/deploy-image.sh`
+
+### 12a. Ensure the EC2 instance role includes SSM + ECR pull
+
+The EC2 instance role should have:
+
+- `AmazonSSMManagedInstanceCore`
+- `AmazonEC2ContainerRegistryReadOnly`
+
+### 12b. Verify the instance is managed by Systems Manager
+
+In AWS Console:
+
+1. Go to `Systems Manager`
+2. Go to `Fleet Manager` or `Managed nodes`
+3. Confirm your EC2 instance appears there
+
+If it does not appear:
+
+- confirm the instance role is attached
+- confirm the instance can reach AWS public endpoints
+- wait a few minutes and refresh
+
+### 12c. Add one more GitHub repository variable
+
+In GitHub repo:
+
+`Settings` -> `Secrets and variables` -> `Actions` -> `Variables`
+
+Add:
+
+- `AWS_EC2_INSTANCE_ID`
+  - value: the EC2 instance ID, for example `i-0123456789abcdef0`
+
+### 12d. Run the SSM deploy workflow
+
+In GitHub:
+
+`Actions` -> `Deploy to AWS EC2 via SSM` -> `Run workflow`
+
+What it does:
+
+- builds and pushes the image to ECR
+- sends an SSM Run Command to the EC2 instance
+- uploads `deploy-image.sh` to the instance through SSM itself
+- runs the deploy script on the instance
+- waits for command completion and prints stdout/stderr
+
+### 12e. Exit criteria
+
+This step is successful when:
+
+- the workflow completes without SSH
+- the EC2 instance restarts using the new ECR image
+- `/health` remains OK
+- you can tighten SSH back to your admin IP and leave it there
+
+---
+
 ## Common issues
 
 ## 1) GitHub deploy fails with SSH error
@@ -308,4 +381,5 @@ For now:
 - `.github/workflows/ci.yml`
 - `.github/workflows/deploy-aws-ec2.yml`
 - `.github/workflows/publish-ecr.yml`
+- `.github/workflows/deploy-aws-ssm.yml`
 - `deploy/ec2/deploy-image.sh`

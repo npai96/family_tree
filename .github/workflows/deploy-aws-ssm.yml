@@ -1,0 +1,118 @@
+name: Deploy to AWS EC2 via SSM
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'family-tree' }}
+      EC2_INSTANCE_ID: ${{ vars.AWS_EC2_INSTANCE_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate AWS workflow configuration
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+
+          required = {
+              "AWS_REGION": os.environ.get("AWS_REGION"),
+              "ECR_REPOSITORY": os.environ.get("ECR_REPOSITORY"),
+              "EC2_INSTANCE_ID": os.environ.get("EC2_INSTANCE_ID"),
+          }
+          missing = [name for name, value in required.items() if not value]
+          if missing:
+              print("Missing GitHub repository variables: " + ", ".join(missing), file=sys.stderr)
+              sys.exit(1)
+          PY
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        id: build-image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          IMAGE_SHA_TAG="$REGISTRY/$ECR_REPOSITORY:${GITHUB_SHA}"
+          IMAGE_LATEST_TAG="$REGISTRY/$ECR_REPOSITORY:latest"
+          docker build -t "$IMAGE_SHA_TAG" -t "$IMAGE_LATEST_TAG" .
+          docker push "$IMAGE_SHA_TAG"
+          docker push "$IMAGE_LATEST_TAG"
+          echo "image_sha_tag=$IMAGE_SHA_TAG" >> "$GITHUB_OUTPUT"
+          {
+            echo "Published image tags:"
+            echo "- $IMAGE_SHA_TAG"
+            echo "- $IMAGE_LATEST_TAG"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Trigger deploy command via SSM
+        id: ssm
+        env:
+          APP_IMAGE: ${{ steps.build-image.outputs.image_sha_tag }}
+          APP_DOMAIN: ${{ secrets.APP_DOMAIN }}
+        run: |
+          SCRIPT_B64="$(base64 -w 0 deploy/ec2/deploy-image.sh)"
+          export SCRIPT_B64
+          python - <<'PY' > ssm-params.json
+          import json
+          import os
+
+          commands = [
+              "set -euo pipefail",
+              "echo '{}' | base64 -d > \"$HOME/deploy-image.sh\"".format(os.environ["SCRIPT_B64"]),
+              "chmod +x \"$HOME/deploy-image.sh\"",
+              "bash \"$HOME/deploy-image.sh\" '{}' '{}' '{}'".format(
+                  os.environ["GITHUB_SHA"],
+                  os.environ["APP_DOMAIN"],
+                  os.environ["APP_IMAGE"],
+              ),
+          ]
+          print(json.dumps({"commands": commands}))
+          PY
+          COMMAND_ID="$(
+            aws ssm send-command \
+              --instance-ids "$EC2_INSTANCE_ID" \
+              --document-name "AWS-RunShellScript" \
+              --comment "Deploy family-tree ${GITHUB_SHA} via SSM" \
+              --parameters file://ssm-params.json \
+              --query "Command.CommandId" \
+              --output text
+          )"
+          echo "command_id=$COMMAND_ID" >> "$GITHUB_OUTPUT"
+          echo "SSM command id: $COMMAND_ID" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Wait for SSM deploy completion
+        env:
+          COMMAND_ID: ${{ steps.ssm.outputs.command_id }}
+        run: |
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$EC2_INSTANCE_ID"
+
+      - name: Show SSM command output
+        if: always()
+        env:
+          COMMAND_ID: ${{ steps.ssm.outputs.command_id }}
+        run: |
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$EC2_INSTANCE_ID" \
+            --query '{Status:Status, StdOut:StandardOutputContent, StdErr:StandardErrorContent}' \
+            --output json
