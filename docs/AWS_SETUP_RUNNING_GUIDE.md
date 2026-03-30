@@ -424,6 +424,7 @@ Once the SSM workflow succeeds end-to-end:
 ## Related files
 
 - `docs/DEPLOY_AWS_CHEAP.md`
+- `docs/DEPLOYMENT_FAILURE_RUNBOOK.md`
 - `docs/TEMP_WORKAROUNDS_AND_PROD_UPGRADE.md`
 - `.github/workflows/ci.yml`
 - `.github/workflows/deploy-aws-ec2.yml`

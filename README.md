@@ -100,3 +100,4 @@ make test
 - Fallback SSH deploy workflow: `.github/workflows/deploy-aws-ec2.yml`
 - Deployment guide: `docs/DEPLOY_AWS_CHEAP.md`
 - Running AWS setup guide: `docs/AWS_SETUP_RUNNING_GUIDE.md`
+- Deployment failure runbook: `docs/DEPLOYMENT_FAILURE_RUNBOOK.md`
