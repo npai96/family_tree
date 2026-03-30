@@ -68,6 +68,7 @@ jobs:
           APP_IMAGE: ${{ steps.build-image.outputs.image_sha_tag }}
           APP_DOMAIN: ${{ secrets.APP_DOMAIN }}
         run: |
+          set -euo pipefail
           SCRIPT_B64="$(base64 -w 0 deploy/ec2/deploy-image.sh)"
           export SCRIPT_B64
           python - <<'PY' > ssm-params.json
@@ -95,10 +96,15 @@ jobs:
               --query "Command.CommandId" \
               --output text
           )"
+          if [[ -z "$COMMAND_ID" || "$COMMAND_ID" == "None" ]]; then
+            echo "SSM send-command did not return a CommandId" >&2
+            exit 1
+          fi
           echo "command_id=$COMMAND_ID" >> "$GITHUB_OUTPUT"
           echo "SSM command id: $COMMAND_ID" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Wait for SSM deploy completion
+        if: steps.ssm.outputs.command_id != ''
         env:
           COMMAND_ID: ${{ steps.ssm.outputs.command_id }}
         run: |
@@ -107,7 +113,7 @@ jobs:
             --instance-id "$EC2_INSTANCE_ID"
 
       - name: Show SSM command output
-        if: always()
+        if: always() && steps.ssm.outputs.command_id != ''
         env:
           COMMAND_ID: ${{ steps.ssm.outputs.command_id }}
         run: |

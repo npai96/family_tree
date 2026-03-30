@@ -342,6 +342,44 @@ What it does:
 - runs the deploy script on the instance
 - waits for command completion and prints stdout/stderr
 
+### 12d.1. Give the GitHub OIDC role permission to call SSM
+
+The same GitHub IAM role used for ECR publish also needs SSM permissions for this workflow.
+
+Add an inline policy to the GitHub role with your real region/account/instance ID values:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "SendCommandToFamilyTreeInstance",
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": [
+        "arn:aws:ssm:ap-southeast-2::document/AWS-RunShellScript",
+        "arn:aws:ec2:ap-southeast-2:869694272453:instance/i-0db6756b675f410f2"
+      ]
+    },
+    {
+      "Sid": "ReadCommandInvocationStatus",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetCommandInvocation",
+        "ssm:ListCommandInvocations"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+Mental model:
+
+- `SendCommand` lets GitHub ask AWS to run a shell script on the EC2 instance
+- `GetCommandInvocation` lets GitHub wait for completion and read stdout/stderr
+- this does **not** grant GitHub direct SSH access to the server
+
 ### 12e. Exit criteria
 
 This step is successful when:
