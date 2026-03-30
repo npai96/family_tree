@@ -10,13 +10,18 @@ RELEASE_SHA="$1"
 DOMAIN="$2"
 APP_IMAGE="$3"
 
-APP_ROOT="$HOME/apps/family_tree"
+HOME_DIR="${HOME:-$(getent passwd "$(id -un)" | cut -d: -f6 2>/dev/null || true)}"
+if [[ -z "$HOME_DIR" ]]; then
+  HOME_DIR="/root"
+fi
+
+APP_ROOT="$HOME_DIR/apps/family_tree"
 RELEASE_DIR="$APP_ROOT/releases/$RELEASE_SHA"
 CURRENT_DIR="$APP_ROOT/current"
 CONFIG_ARCHIVE_PATH="/tmp/family-tree-config.tgz"
 IMAGE_ARCHIVE_PATH="/tmp/family-tree-image.tar"
-DATA_DIR="$HOME/family_tree_data/data"
-MEDIA_DIR="$HOME/family_tree_data/media"
+DATA_DIR="$HOME_DIR/family_tree_data/data"
+MEDIA_DIR="$HOME_DIR/family_tree_data/media"
 
 mkdir -p "$RELEASE_DIR" "$DATA_DIR" "$MEDIA_DIR"
 
