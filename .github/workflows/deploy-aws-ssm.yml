@@ -71,7 +71,7 @@ jobs:
           set -euo pipefail
           SCRIPT_B64="$(base64 -w 0 deploy/ec2/deploy-image.sh)"
           export SCRIPT_B64
-          python -c 'import json, os; bash_command = "set -euo pipefail\n" + "echo \x27{script_b64}\x27 | base64 -d > \"$HOME/deploy-image.sh\"\n".format(script_b64=os.environ["SCRIPT_B64"]) + "chmod +x \"$HOME/deploy-image.sh\"\n" + "bash \"$HOME/deploy-image.sh\" \x27{release_sha}\x27 \x27{app_domain}\x27 \x27{app_image}\x27".format(release_sha=os.environ["GITHUB_SHA"], app_domain=os.environ["APP_DOMAIN"], app_image=os.environ["APP_IMAGE"]); print(json.dumps({"commands": ["bash -lc {}".format(json.dumps(bash_command))]}))' > ssm-params.json
+          python -c 'import json, os; print(json.dumps({"commands": ["echo \x27{script_b64}\x27 | base64 -d > \"$HOME/deploy-image.sh\"".format(script_b64=os.environ["SCRIPT_B64"]), "chmod +x \"$HOME/deploy-image.sh\"", "bash \"$HOME/deploy-image.sh\" \x27{release_sha}\x27 \x27{app_domain}\x27 \x27{app_image}\x27".format(release_sha=os.environ["GITHUB_SHA"], app_domain=os.environ["APP_DOMAIN"], app_image=os.environ["APP_IMAGE"])]}))' > ssm-params.json
           COMMAND_ID="$(
             aws ssm send-command \
               --instance-ids "$EC2_INSTANCE_ID" \
