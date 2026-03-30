@@ -18,9 +18,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
+from app.api.db_config import load_database_config
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-DB_PATH = Path(os.getenv("DB_PATH", str(BASE_DIR / "app" / "api" / "mvp.db")))
+DATABASE_CONFIG = load_database_config()
+DB_BACKEND = DATABASE_CONFIG.backend
+DB_PATH = DATABASE_CONFIG.sqlite_path or (BASE_DIR / "app" / "api" / "mvp.db")
 WEB_INDEX_PATH = BASE_DIR / "app" / "web" / "index.html"
 MEDIA_DIR = Path(os.getenv("MEDIA_DIR", str(BASE_DIR / "app" / "media")))
 ALLOW_LEGACY_X_USER_ID = os.getenv("ALLOW_LEGACY_X_USER_ID", "false").strip().lower() in {"1", "true", "yes", "on"}
@@ -31,6 +34,11 @@ def utc_now() -> str:
 
 
 def get_conn() -> sqlite3.Connection:
+    if DB_BACKEND != "sqlite":
+        raise RuntimeError(
+            "PostgreSQL runtime is not switched on yet. "
+            "Use sqlite for the API runtime for now and follow docs/POSTGRES_MIGRATION_GUIDE.md for the migration path."
+        )
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
@@ -1027,7 +1035,7 @@ def _compute_subgraph(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"status": "ok", "db_backend": DB_BACKEND}
 
 
 @app.get("/", include_in_schema=False)

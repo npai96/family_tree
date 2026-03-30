@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import app.api.main as main
+from app.api.db_config import load_database_config
 
 
 def build_client(tmp_path: Path) -> TestClient:
@@ -35,6 +36,24 @@ def test_health(tmp_path: Path) -> None:
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+    assert response.json()["db_backend"] == "sqlite"
+
+
+def test_database_config_supports_sqlite_database_url(monkeypatch, tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "url.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite://{sqlite_path}")
+    monkeypatch.delenv("DB_PATH", raising=False)
+    config = load_database_config()
+    assert config.backend == "sqlite"
+    assert config.sqlite_path == sqlite_path
+
+
+def test_database_config_marks_postgres_urls(monkeypatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql://family_tree:family_tree_dev@127.0.0.1:5432/family_tree")
+    monkeypatch.delenv("DB_PATH", raising=False)
+    config = load_database_config()
+    assert config.backend == "postgres"
+    assert config.sqlite_path is None
 
 
 def test_end_to_end_graph_flow_with_membership(tmp_path: Path) -> None:

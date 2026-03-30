@@ -86,6 +86,15 @@ Quick manual flow in UI:
 make test
 ```
 
+## Local Postgres Sandbox
+```bash
+make postgres-up
+python3 scripts/sqlite_to_postgres_runtime_export.py
+```
+
+Guide:
+- `docs/POSTGRES_MIGRATION_GUIDE.md`
+
 ## Notes
 - This increment uses SQLite for fast iteration.
 - Production plan remains Postgres + Neo4j + object storage media pipeline per `MVP_TECHNICAL_ARCHITECTURE.md`.

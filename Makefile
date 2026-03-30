@@ -3,7 +3,7 @@ PIP=$(VENV)/bin/pip
 PYTEST=$(VENV)/bin/pytest
 UVICORN=$(VENV)/bin/uvicorn
 
-.PHONY: setup run test
+.PHONY: setup run test postgres-up postgres-down
 
 setup:
 	python3 -m venv $(VENV)
@@ -14,3 +14,9 @@ run:
 
 test:
 	$(PYTEST) -q
+
+postgres-up:
+	docker compose -f docker-compose.postgres.yml up -d
+
+postgres-down:
+	docker compose -f docker-compose.postgres.yml down

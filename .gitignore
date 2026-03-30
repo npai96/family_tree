@@ -8,3 +8,4 @@ build/
 .venv/
 app/api/mvp.db
 app/media/
+db/generated/
