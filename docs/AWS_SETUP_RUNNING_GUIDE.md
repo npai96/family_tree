@@ -389,6 +389,15 @@ This step is successful when:
 - `/health` remains OK
 - you can tighten SSH back to your admin IP and leave it there
 
+### 12f. Recommended steady state after SSM is proven
+
+Once the SSM workflow succeeds end-to-end:
+
+- treat `.github/workflows/deploy-aws-ssm.yml` as the primary deploy path
+- keep `.github/workflows/deploy-aws-ec2.yml` only as an emergency fallback
+- keep SSH inbound locked to your own admin IP only
+- use the SSH workflow only if the SSM path is broken and you need emergency access
+
 ---
 
 ## Common issues

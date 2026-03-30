@@ -95,8 +95,8 @@ make test
 
 ## Cheap AWS Deploy + CI/CD
 - CI workflow: `.github/workflows/ci.yml`
-- CD workflow: `.github/workflows/deploy-aws-ec2.yml`
+- Primary CD workflow: `.github/workflows/deploy-aws-ssm.yml`
 - ECR publish workflow: `.github/workflows/publish-ecr.yml`
-- SSM deploy workflow: `.github/workflows/deploy-aws-ssm.yml`
+- Fallback SSH deploy workflow: `.github/workflows/deploy-aws-ec2.yml`
 - Deployment guide: `docs/DEPLOY_AWS_CHEAP.md`
 - Running AWS setup guide: `docs/AWS_SETUP_RUNNING_GUIDE.md`
