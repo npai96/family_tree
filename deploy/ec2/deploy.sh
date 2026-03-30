@@ -10,10 +10,34 @@ RELEASE_SHA="$1"
 DOMAIN="$2"
 APP_IMAGE="$3"
 
-HOME_DIR="${HOME:-$(getent passwd "$(id -un)" | cut -d: -f6 2>/dev/null || true)}"
-if [[ -z "$HOME_DIR" ]]; then
-  HOME_DIR="/root"
-fi
+resolve_home_dir() {
+  local candidate=""
+  for candidate in \
+    "${HOME:-}" \
+    "/home/ubuntu" \
+    "$(getent passwd "$(id -un)" | cut -d: -f6 2>/dev/null || true)" \
+    "/root"
+  do
+    if [[ -n "$candidate" && -d "$candidate/apps/family_tree" ]]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+
+  for candidate in \
+    "${HOME:-}" \
+    "/home/ubuntu" \
+    "$(getent passwd "$(id -un)" | cut -d: -f6 2>/dev/null || true)" \
+    "/root"
+  do
+    if [[ -n "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+}
+
+HOME_DIR="$(resolve_home_dir)"
 
 APP_ROOT="$HOME_DIR/apps/family_tree"
 RELEASE_DIR="$APP_ROOT/releases/$RELEASE_SHA"
