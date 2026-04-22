@@ -1,4 +1,5 @@
 from pathlib import Path
+import sqlite3
 import sys
 
 from fastapi.testclient import TestClient
@@ -8,13 +9,14 @@ sys.path.insert(0, str(ROOT))
 
 import app.api.main as main
 from app.api.db_config import load_database_config
+from app.api.db_runtime import INTEGRITY_ERRORS, _adapt_sql_placeholders, configure_database
 
 
 def build_client(tmp_path: Path) -> TestClient:
-    main.DB_PATH = tmp_path / "test.db"
+    configure_database(db_path=tmp_path / "test.db")
     main.MEDIA_DIR = tmp_path / "media"
     main.ALLOW_LEGACY_X_USER_ID = True
-    main.init_db()
+    main.init_db(main.MEDIA_DIR)
     return TestClient(main.app)
 
 
@@ -54,6 +56,25 @@ def test_database_config_marks_postgres_urls(monkeypatch) -> None:
     config = load_database_config()
     assert config.backend == "postgres"
     assert config.sqlite_path is None
+
+
+def test_placeholder_adaptation_stays_sqlite_by_default() -> None:
+    configure_database(db_path="/tmp/family-tree-test.db")
+    assert _adapt_sql_placeholders("SELECT * FROM users WHERE id = ? AND created_at > ?") == (
+        "SELECT * FROM users WHERE id = ? AND created_at > ?"
+    )
+
+
+def test_placeholder_adaptation_converts_for_postgres() -> None:
+    configure_database(database_url="postgresql://family_tree:family_tree_dev@127.0.0.1:5432/family_tree")
+    assert _adapt_sql_placeholders("SELECT * FROM users WHERE id = ? AND created_at > ?") == (
+        "SELECT * FROM users WHERE id = %s AND created_at > %s"
+    )
+    configure_database(db_path="/tmp/family-tree-test.db")
+
+
+def test_integrity_errors_include_sqlite() -> None:
+    assert sqlite3.IntegrityError in INTEGRITY_ERRORS
 
 
 def test_end_to_end_graph_flow_with_membership(tmp_path: Path) -> None:

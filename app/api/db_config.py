@@ -33,10 +33,7 @@ def _normalize_sqlite_url(raw_url: str) -> Path:
     return Path(unquote(raw_path))
 
 
-def load_database_config() -> DatabaseConfig:
-    database_url = os.getenv("DATABASE_URL", "").strip()
-    db_path_env = os.getenv("DB_PATH", "").strip()
-
+def build_database_config(database_url: str = "", db_path_env: str = "") -> DatabaseConfig:
     if database_url:
         if database_url.startswith("sqlite:///"):
             sqlite_path = _normalize_sqlite_url(database_url)
@@ -52,4 +49,11 @@ def load_database_config() -> DatabaseConfig:
         backend="sqlite",
         database_url=f"sqlite://{sqlite_path}",
         sqlite_path=sqlite_path,
+    )
+
+
+def load_database_config() -> DatabaseConfig:
+    return build_database_config(
+        database_url=os.getenv("DATABASE_URL", "").strip(),
+        db_path_env=os.getenv("DB_PATH", "").strip(),
     )

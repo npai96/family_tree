@@ -92,6 +92,12 @@ make postgres-up
 python3 scripts/sqlite_to_postgres_runtime_export.py
 ```
 
+Open a Postgres REPL:
+
+```bash
+docker compose -f docker-compose.postgres.yml exec postgres psql -U family_tree -d family_tree
+```
+
 Guide:
 - `docs/POSTGRES_MIGRATION_GUIDE.md`
 
