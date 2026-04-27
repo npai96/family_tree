@@ -3,7 +3,9 @@ services:
     image: "${APP_IMAGE}"
     environment:
       ALLOW_LEGACY_X_USER_ID: "${ALLOW_LEGACY_X_USER_ID:-false}"
-      DB_PATH: /data/mvp.db
+      DB_PATH: "${DB_PATH:-/data/mvp.db}"
+      DATABASE_URL: "${DATABASE_URL:-}"
+      POSTGRES_RUNTIME_ENABLED: "${POSTGRES_RUNTIME_ENABLED:-false}"
       MEDIA_DIR: /app/app/media
     volumes:
       - "${DATA_DIR}:/data"

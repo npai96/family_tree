@@ -9,6 +9,8 @@ fi
 RELEASE_SHA="$1"
 DOMAIN="$2"
 APP_IMAGE="$3"
+DATABASE_URL="${DATABASE_URL:-}"
+POSTGRES_RUNTIME_ENABLED="${POSTGRES_RUNTIME_ENABLED:-false}"
 
 resolve_home_dir() {
   local candidate=""
@@ -45,6 +47,12 @@ DATA_DIR="$HOME_DIR/family_tree_data/data"
 MEDIA_DIR="$HOME_DIR/family_tree_data/media"
 REGISTRY=""
 AWS_REGION=""
+
+dotenv_quote() {
+  local value="$1"
+  value="${value//\'/\'\\\'\'}"
+  printf "'%s'" "$value"
+}
 
 if [[ ! -d "$CURRENT_DIR" ]]; then
   echo "Expected config directory at $CURRENT_DIR"
@@ -84,6 +92,9 @@ APP_IMAGE=$APP_IMAGE
 ALLOW_LEGACY_X_USER_ID=false
 DATA_DIR=$DATA_DIR
 MEDIA_DIR=$MEDIA_DIR
+DB_PATH=/data/mvp.db
+DATABASE_URL=$(dotenv_quote "$DATABASE_URL")
+POSTGRES_RUNTIME_ENABLED=$POSTGRES_RUNTIME_ENABLED
 ENVVARS
 
 cd "$CURRENT_DIR"

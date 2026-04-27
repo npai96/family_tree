@@ -111,6 +111,7 @@ Note:
 
 Guide:
 - `docs/POSTGRES_MIGRATION_GUIDE.md`
+- `docs/POSTGRES_CUTOVER_RUNBOOK.md`
 
 ## Notes
 - This increment uses SQLite for fast iteration.

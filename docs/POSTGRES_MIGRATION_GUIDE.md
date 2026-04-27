@@ -70,6 +70,8 @@ docker exec -i $(docker ps -qf name=postgres) psql -U family_tree -d family_tree
 
 ## Recommended next implementation slices
 
+For the non-local environment switch, follow `docs/POSTGRES_CUTOVER_RUNBOOK.md`.
+
 ## Slice 1
 
 - move DB code out of `app/api/main.py` into a dedicated module

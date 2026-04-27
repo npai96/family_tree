@@ -14,6 +14,8 @@ jobs:
       AWS_REGION: ${{ vars.AWS_REGION }}
       ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'family-tree' }}
       EC2_INSTANCE_ID: ${{ vars.AWS_EC2_INSTANCE_ID }}
+      DATABASE_URL_SSM_PARAMETER: ${{ vars.DATABASE_URL_SSM_PARAMETER }}
+      POSTGRES_RUNTIME_ENABLED: ${{ vars.POSTGRES_RUNTIME_ENABLED || 'false' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -71,7 +73,47 @@ jobs:
           set -euo pipefail
           SCRIPT_B64="$(base64 -w 0 deploy/ec2/deploy-image.sh)"
           export SCRIPT_B64
-          python -c 'import json, os; print(json.dumps({"commands": ["echo \x27{script_b64}\x27 | base64 -d > \"$HOME/deploy-image.sh\"".format(script_b64=os.environ["SCRIPT_B64"]), "chmod +x \"$HOME/deploy-image.sh\"", "bash \"$HOME/deploy-image.sh\" \x27{release_sha}\x27 \x27{app_domain}\x27 \x27{app_image}\x27".format(release_sha=os.environ["GITHUB_SHA"], app_domain=os.environ["APP_DOMAIN"], app_image=os.environ["APP_IMAGE"])]}))' > ssm-params.json
+          python - <<'PY' > ssm-params.json
+          import json
+          import os
+          import shlex
+
+          commands = [
+              "echo {script_b64} | base64 -d > \"$HOME/deploy-image.sh\"".format(
+                  script_b64=shlex.quote(os.environ["SCRIPT_B64"])
+              ),
+              "chmod +x \"$HOME/deploy-image.sh\"",
+          ]
+
+          postgres_enabled = os.environ.get("POSTGRES_RUNTIME_ENABLED", "false").strip().lower()
+          database_url_parameter = os.environ.get("DATABASE_URL_SSM_PARAMETER", "").strip()
+          deploy_prefix = "POSTGRES_RUNTIME_ENABLED={postgres_enabled}".format(
+              postgres_enabled=shlex.quote(postgres_enabled)
+          )
+
+          if database_url_parameter:
+              commands.append(
+                  "DATABASE_URL=\"$(aws ssm get-parameter --name {name} --with-decryption --query Parameter.Value --output text)\" "
+                  "{deploy_prefix} bash \"$HOME/deploy-image.sh\" {release_sha} {app_domain} {app_image}".format(
+                      name=shlex.quote(database_url_parameter),
+                      deploy_prefix=deploy_prefix,
+                      release_sha=shlex.quote(os.environ["GITHUB_SHA"]),
+                      app_domain=shlex.quote(os.environ["APP_DOMAIN"]),
+                      app_image=shlex.quote(os.environ["APP_IMAGE"]),
+                  )
+              )
+          else:
+              commands.append(
+                  "{deploy_prefix} bash \"$HOME/deploy-image.sh\" {release_sha} {app_domain} {app_image}".format(
+                      deploy_prefix=deploy_prefix,
+                      release_sha=shlex.quote(os.environ["GITHUB_SHA"]),
+                      app_domain=shlex.quote(os.environ["APP_DOMAIN"]),
+                      app_image=shlex.quote(os.environ["APP_IMAGE"]),
+                  )
+              )
+
+          print(json.dumps({"commands": commands}))
+          PY
           COMMAND_ID="$(
             aws ssm send-command \
               --instance-ids "$EC2_INSTANCE_ID" \
