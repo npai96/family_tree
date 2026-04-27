@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 import json
 import shutil
 import secrets
@@ -391,7 +390,7 @@ UNDIRECTED_RELATIONSHIP_TYPES = {
 }
 
 
-def _require_user(conn: sqlite3.Connection, user_id: Optional[str]) -> str:
+def _require_user(conn: Any, user_id: Optional[str]) -> str:
     if not user_id:
         raise HTTPException(status_code=401, detail="Missing X-User-Id header")
     row = fetch_one(conn, "SELECT id FROM users WHERE id = ?", (user_id,))
@@ -409,7 +408,7 @@ def _extract_bearer_token(authorization: Optional[str]) -> Optional[str]:
     return parts[1].strip()
 
 
-def _user_id_from_session_token(conn: sqlite3.Connection, token: Optional[str]) -> Optional[str]:
+def _user_id_from_session_token(conn: Any, token: Optional[str]) -> Optional[str]:
     if not token:
         return None
     row = fetch_one(
@@ -431,7 +430,7 @@ def _user_id_from_session_token(conn: sqlite3.Connection, token: Optional[str]) 
 
 
 def _require_authenticated_user(
-    conn: sqlite3.Connection,
+    conn: Any,
     x_user_id: Optional[str],
     authorization: Optional[str],
 ) -> str:
@@ -445,7 +444,7 @@ def _require_authenticated_user(
 
 
 def _log_audit(
-    conn: sqlite3.Connection,
+    conn: Any,
     circle_id: str,
     actor_user_id: str,
     action: str,
@@ -472,7 +471,7 @@ def _log_audit(
     )
 
 
-def _get_role(conn: sqlite3.Connection, circle_id: str, user_id: str) -> str:
+def _get_role(conn: Any, circle_id: str, user_id: str) -> str:
     row = fetch_one(
         conn,
         "SELECT role FROM circle_memberships WHERE circle_id = ? AND user_id = ?",
@@ -483,7 +482,7 @@ def _get_role(conn: sqlite3.Connection, circle_id: str, user_id: str) -> str:
     return str(row["role"])
 
 
-def _require_circle_role(conn: sqlite3.Connection, circle_id: str, user_id: str, allowed_roles: set[str]) -> str:
+def _require_circle_role(conn: Any, circle_id: str, user_id: str, allowed_roles: set[str]) -> str:
     role = _get_role(conn, circle_id, user_id)
     if role not in allowed_roles:
         raise HTTPException(status_code=403, detail="Insufficient role for this action")
@@ -540,7 +539,7 @@ def _validate_person_dates(birth_date: Optional[str], death_date: Optional[str])
 
 
 def _find_person_duplicates(
-    conn: sqlite3.Connection,
+    conn: Any,
     circle_id: str,
     full_name: str,
     birth_date: Optional[str],
@@ -587,7 +586,7 @@ def _find_person_duplicates(
 
 
 def _would_create_parent_cycle(
-    conn: sqlite3.Connection,
+    conn: Any,
     circle_id: str,
     parent_id: str,
     child_id: str,
@@ -621,7 +620,7 @@ def _would_create_parent_cycle(
 
 
 def _insert_person_revision(
-    conn: sqlite3.Connection,
+    conn: Any,
     circle_id: str,
     person_id: str,
     changed_by: str,
@@ -2519,7 +2518,7 @@ def get_subgraph_migration_geojson(
             (circle_id, *person_ids),
         )
 
-    grouped: dict[str, list[sqlite3.Row]] = {}
+    grouped: dict[str, list[Any]] = {}
     for row in place_rows:
         if up_to_date and row["from_date"] and row["from_date"] > up_to_date:
             continue

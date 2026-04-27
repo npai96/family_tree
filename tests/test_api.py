@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT))
 
 import app.api.main as main
 from app.api.db_config import load_database_config
-from app.api.db_runtime import INTEGRITY_ERRORS, _adapt_sql_placeholders, configure_database
+from app.api.db_runtime import INTEGRITY_ERRORS, _adapt_sql_placeholders, configure_database, execute
 
 try:
     import psycopg
@@ -1522,7 +1522,8 @@ def test_undirected_relationships_are_canonical_and_delete_reverse_duplicates(tm
     with main.get_conn() as conn:
         canonical_from = first_body["from_person_id"]
         canonical_to = first_body["to_person_id"]
-        conn.execute(
+        execute(
+            conn,
             """
             INSERT INTO relationships (id, circle_id, from_person_id, to_person_id, relationship_type, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
