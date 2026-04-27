@@ -231,7 +231,6 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 
 
 _DATABASE_CONFIG = load_database_config()
-POSTGRES_RUNTIME_ENABLED = os.getenv("POSTGRES_RUNTIME_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 INTEGRITY_ERRORS: tuple[type[BaseException], ...] = (
     (sqlite3.IntegrityError,) + ((PsycopgIntegrityError,) if PsycopgIntegrityError is not None else ())
 )
@@ -264,6 +263,10 @@ def get_sqlite_path() -> Path:
     return _DATABASE_CONFIG.sqlite_path or DEFAULT_SQLITE_PATH
 
 
+def is_postgres_runtime_enabled() -> bool:
+    return os.getenv("POSTGRES_RUNTIME_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _adapt_sql_placeholders(sql: str) -> str:
     if get_db_backend() != "postgres":
         return sql
@@ -272,7 +275,7 @@ def _adapt_sql_placeholders(sql: str) -> str:
 
 def get_conn() -> Any:
     if get_db_backend() == "postgres":
-        if not POSTGRES_RUNTIME_ENABLED:
+        if not is_postgres_runtime_enabled():
             raise RuntimeError(
                 "PostgreSQL connection plumbing exists, but runtime is still intentionally gated off. "
                 "Keep SQLite as the active API backend for now and continue following docs/POSTGRES_MIGRATION_GUIDE.md."
@@ -339,9 +342,23 @@ def execute_many(
     return conn.executemany(_adapt_sql_placeholders(sql), (tuple(params) for params in seq_of_params))
 
 
+def _load_postgres_init_sql() -> str:
+    return (Path(__file__).resolve().parents[2] / "db" / "runtime_postgres.sql").read_text()
+
+
 def init_db(media_dir: Path) -> None:
-    sqlite_path = get_sqlite_path()
-    sqlite_path.parent.mkdir(parents=True, exist_ok=True)
     media_dir.mkdir(parents=True, exist_ok=True)
-    with get_conn() as conn:
-        conn.executescript(SQLITE_INIT_SQL)
+    if get_db_backend() == "sqlite":
+        sqlite_path = get_sqlite_path()
+        sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+        with get_conn() as conn:
+            conn.executescript(SQLITE_INIT_SQL)
+        return
+
+    if get_db_backend() == "postgres":
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_load_postgres_init_sql())
+        return
+
+    raise RuntimeError(f"Unsupported backend for init_db: {get_db_backend()!r}")

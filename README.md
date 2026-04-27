@@ -98,6 +98,17 @@ Open a Postgres REPL:
 docker compose -f docker-compose.postgres.yml exec postgres psql -U family_tree -d family_tree
 ```
 
+Run the small guarded Postgres-backed API subset:
+
+```bash
+make test-postgres
+```
+
+Note:
+- this expects local Postgres to be running via `make postgres-up`
+- and `psycopg[binary]` installed inside `.venv` via `make setup` or `./.venv/bin/pip install -r requirements.txt`
+- the Docker sandbox binds to `127.0.0.1:5433` so it does not collide with any local Postgres already using `5432`
+
 Guide:
 - `docs/POSTGRES_MIGRATION_GUIDE.md`
 

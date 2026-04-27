@@ -1,7 +1,9 @@
+import os
 from pathlib import Path
 import sqlite3
 import sys
 
+import pytest
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -11,9 +13,44 @@ import app.api.main as main
 from app.api.db_config import load_database_config
 from app.api.db_runtime import INTEGRITY_ERRORS, _adapt_sql_placeholders, configure_database
 
+try:
+    import psycopg
+except ImportError:  # pragma: no cover - optional in some local envs
+    psycopg = None
+
+
+POSTGRES_TEST_DATABASE_URL = os.getenv(
+    "POSTGRES_TEST_DATABASE_URL",
+    "postgresql://family_tree:family_tree_dev@127.0.0.1:5433/family_tree",
+)
+POSTGRES_TESTS_ENABLED = os.getenv("RUN_POSTGRES_TESTS", "false").strip().lower() in {"1", "true", "yes", "on"}
+POSTGRES_RUNTIME_SQL = (ROOT / "db" / "runtime_postgres.sql").read_text()
+postgres_only = pytest.mark.skipif(
+    not POSTGRES_TESTS_ENABLED or psycopg is None,
+    reason="Postgres-backed tests are opt-in. Set RUN_POSTGRES_TESTS=true and ensure psycopg is installed in .venv.",
+)
+
 
 def build_client(tmp_path: Path) -> TestClient:
     configure_database(db_path=tmp_path / "test.db")
+    main.MEDIA_DIR = tmp_path / "media"
+    main.ALLOW_LEGACY_X_USER_ID = True
+    main.init_db(main.MEDIA_DIR)
+    return TestClient(main.app)
+
+
+def reset_postgres_schema() -> None:
+    assert psycopg is not None
+    with psycopg.connect(POSTGRES_TEST_DATABASE_URL, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute("DROP SCHEMA IF EXISTS public CASCADE;")
+            cur.execute("CREATE SCHEMA public;")
+
+
+def build_postgres_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
+    reset_postgres_schema()
+    monkeypatch.setenv("POSTGRES_RUNTIME_ENABLED", "true")
+    configure_database(database_url=POSTGRES_TEST_DATABASE_URL)
     main.MEDIA_DIR = tmp_path / "media"
     main.ALLOW_LEGACY_X_USER_ID = True
     main.init_db(main.MEDIA_DIR)
@@ -41,6 +78,15 @@ def test_health(tmp_path: Path) -> None:
     assert response.json()["db_backend"] == "sqlite"
 
 
+@postgres_only
+def test_health_postgres(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client = build_postgres_client(monkeypatch, tmp_path)
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert response.json()["db_backend"] == "postgres"
+
+
 def test_database_config_supports_sqlite_database_url(monkeypatch, tmp_path: Path) -> None:
     sqlite_path = tmp_path / "url.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite://{sqlite_path}")
@@ -51,7 +97,7 @@ def test_database_config_supports_sqlite_database_url(monkeypatch, tmp_path: Pat
 
 
 def test_database_config_marks_postgres_urls(monkeypatch) -> None:
-    monkeypatch.setenv("DATABASE_URL", "postgresql://family_tree:family_tree_dev@127.0.0.1:5432/family_tree")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://family_tree:family_tree_dev@127.0.0.1:5433/family_tree")
     monkeypatch.delenv("DB_PATH", raising=False)
     config = load_database_config()
     assert config.backend == "postgres"
@@ -66,7 +112,7 @@ def test_placeholder_adaptation_stays_sqlite_by_default() -> None:
 
 
 def test_placeholder_adaptation_converts_for_postgres() -> None:
-    configure_database(database_url="postgresql://family_tree:family_tree_dev@127.0.0.1:5432/family_tree")
+    configure_database(database_url="postgresql://family_tree:family_tree_dev@127.0.0.1:5433/family_tree")
     assert _adapt_sql_placeholders("SELECT * FROM users WHERE id = ? AND created_at > ?") == (
         "SELECT * FROM users WHERE id = %s AND created_at > %s"
     )
@@ -136,6 +182,615 @@ def test_end_to_end_graph_flow_with_membership(tmp_path: Path) -> None:
     assert ancestor_edges[0]["from_person_id"] == child_id
     assert ancestor_edges[0]["to_person_id"] == parent_id
     assert ancestor_edges[0]["relationship_type"] == "child_of"
+
+
+@postgres_only
+def test_postgres_end_to_end_graph_flow_with_membership(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client = build_postgres_client(monkeypatch, tmp_path)
+    owner_id = create_user(client, "Owner")
+    editor_id = create_user(client, "Editor")
+
+    circle = client.post("/circles", json={"name": "Pai Family"}, headers={"X-User-Id": owner_id})
+    assert circle.status_code == 200
+    circle_id = circle.json()["id"]
+
+    add_member = client.post(
+        f"/circles/{circle_id}/members",
+        json={"user_id": editor_id, "role": "editor"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert add_member.status_code == 200
+
+    parent = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Anand Pai", "religion": "Hindu"},
+        headers={"X-User-Id": editor_id},
+    )
+    assert parent.status_code == 200
+    parent_id = parent.json()["id"]
+
+    child = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Maya Pai", "religion": "Hindu"},
+        headers={"X-User-Id": editor_id},
+    )
+    assert child.status_code == 200
+    child_id = child.json()["id"]
+
+    rel = client.post(
+        f"/circles/{circle_id}/relationships",
+        json={"from_person_id": parent_id, "to_person_id": child_id, "relationship_type": "parent_of"},
+        headers={"X-User-Id": editor_id},
+    )
+    assert rel.status_code == 200
+
+    descendants = client.get(
+        f"/circles/{circle_id}/graph/subgraph",
+        params={"root_person_id": parent_id, "direction": "descendants", "depth": 3},
+        headers={"X-User-Id": owner_id},
+    )
+    assert descendants.status_code == 200
+    assert len(descendants.json()["persons"]) == 2
+    assert len(descendants.json()["relationships"]) == 1
+
+
+@postgres_only
+def test_postgres_subgraph_timeline_and_migration_geojson(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client = build_postgres_client(monkeypatch, tmp_path)
+    owner_id = create_user(client, "Owner")
+    circle = client.post("/circles", json={"name": "Subgraph Context"}, headers={"X-User-Id": owner_id})
+    circle_id = circle.json()["id"]
+
+    parent_id = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Parent", "birth_date": "1960-01-01", "birth_place": "Chennai"},
+        headers={"X-User-Id": owner_id},
+    ).json()["id"]
+    child_id = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Child", "birth_date": "1990-01-01"},
+        headers={"X-User-Id": owner_id},
+    ).json()["id"]
+    assert client.post(
+        f"/circles/{circle_id}/relationships",
+        json={"from_person_id": parent_id, "to_person_id": child_id, "relationship_type": "parent_of"},
+        headers={"X-User-Id": owner_id},
+    ).status_code == 200
+
+    event = client.post(
+        f"/circles/{circle_id}/context-events",
+        json={
+            "date": "2000-01-01",
+            "title": "Regional event",
+            "event_type": "social",
+            "description": "Context for family",
+        },
+        headers={"X-User-Id": owner_id},
+    )
+    event_id = event.json()["id"]
+    assert client.post(
+        f"/circles/{circle_id}/persons/{child_id}/context-links",
+        json={"context_event_id": event_id, "relevance_note": "affected schooling"},
+        headers={"X-User-Id": owner_id},
+    ).status_code == 200
+
+    assert client.post(
+        f"/circles/{circle_id}/persons/{child_id}/places",
+        json={
+            "place_name": "Bengaluru",
+            "country": "India",
+            "lat": 12.9716,
+            "lng": 77.5946,
+            "from_date": "2005-01-01",
+        },
+        headers={"X-User-Id": owner_id},
+    ).status_code == 200
+    assert client.post(
+        f"/circles/{circle_id}/persons/{child_id}/places",
+        json={
+            "place_name": "Singapore",
+            "country": "Singapore",
+            "lat": 1.3521,
+            "lng": 103.8198,
+            "from_date": "2015-01-01",
+        },
+        headers={"X-User-Id": owner_id},
+    ).status_code == 200
+
+    timeline = client.get(
+        f"/circles/{circle_id}/graph/subgraph/timeline",
+        params={
+            "root_person_id": child_id,
+            "direction": "ancestors",
+            "depth": 2,
+            "mode": "lineage",
+            "from_date": "1980-01-01",
+            "to_date": "2010-12-31",
+        },
+        headers={"X-User-Id": owner_id},
+    )
+    assert timeline.status_code == 200
+    tl = timeline.json()
+    assert len(tl) >= 2
+    assert all("1980-01-01" <= row["date"] <= "2010-12-31" for row in tl)
+
+    migration_now = client.get(
+        f"/circles/{circle_id}/graph/subgraph/migration-geojson",
+        params={
+            "root_person_id": child_id,
+            "direction": "ancestors",
+            "depth": 2,
+            "mode": "lineage",
+        },
+        headers={"X-User-Id": owner_id},
+    )
+    assert migration_now.status_code == 200
+    fc = migration_now.json()
+    assert fc["type"] == "FeatureCollection"
+    assert any(f["geometry"]["type"] == "Point" for f in fc["features"])
+
+
+@postgres_only
+def test_postgres_change_request_approval_updates_person(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client = build_postgres_client(monkeypatch, tmp_path)
+    owner_id = create_user(client, "Owner")
+    viewer_id = create_user(client, "Viewer")
+
+    circle = client.post("/circles", json={"name": "Nair Family"}, headers={"X-User-Id": owner_id})
+    circle_id = circle.json()["id"]
+
+    member = client.post(
+        f"/circles/{circle_id}/members",
+        json={"user_id": viewer_id, "role": "viewer"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert member.status_code == 200
+
+    person = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Lakshmi Nair", "religion": "Hindu"},
+        headers={"X-User-Id": owner_id},
+    )
+    person_id = person.json()["id"]
+
+    change_request = client.post(
+        f"/circles/{circle_id}/change-requests",
+        json={"entity_type": "person", "entity_id": person_id, "proposed_patch_json": {"religion": "Spiritual"}},
+        headers={"X-User-Id": viewer_id},
+    )
+    assert change_request.status_code == 200
+    cr_id = change_request.json()["id"]
+
+    approve = client.post(
+        f"/circles/{circle_id}/change-requests/{cr_id}/approve",
+        json={"review_comment": "Approved"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert approve.status_code == 200
+    assert approve.json()["status"] == "approved"
+
+    persons = client.get(f"/circles/{circle_id}/persons", headers={"X-User-Id": owner_id})
+    assert persons.status_code == 200
+    assert persons.json()[0]["religion"] == "Spiritual"
+
+
+@postgres_only
+def test_postgres_context_events_and_person_timeline(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client = build_postgres_client(monkeypatch, tmp_path)
+    owner_id = create_user(client, "Owner")
+    editor_id = create_user(client, "Editor")
+
+    circle = client.post("/circles", json={"name": "Context Family"}, headers={"X-User-Id": owner_id})
+    circle_id = circle.json()["id"]
+
+    add_editor = client.post(
+        f"/circles/{circle_id}/members",
+        json={"user_id": editor_id, "role": "editor"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert add_editor.status_code == 200
+
+    person = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Ravi Kumar", "birth_date": "1950-01-01", "birth_place": "Chennai"},
+        headers={"X-User-Id": editor_id},
+    )
+    assert person.status_code == 200
+    person_id = person.json()["id"]
+
+    event = client.post(
+        f"/circles/{circle_id}/context-events",
+        json={
+            "date": "1971-12-16",
+            "title": "South Asia geopolitical turning point",
+            "event_type": "political",
+            "location_name": "South Asia",
+            "description": "A major historical shift in the region",
+        },
+        headers={"X-User-Id": editor_id},
+    )
+    assert event.status_code == 200
+    event_id = event.json()["id"]
+
+    link = client.post(
+        f"/circles/{circle_id}/persons/{person_id}/context-links",
+        json={"context_event_id": event_id, "relevance_note": "He discussed this often"},
+        headers={"X-User-Id": editor_id},
+    )
+    assert link.status_code == 200
+
+    timeline = client.get(
+        f"/circles/{circle_id}/persons/{person_id}/timeline",
+        headers={"X-User-Id": owner_id},
+    )
+    assert timeline.status_code == 200
+    body = timeline.json()
+    assert len(body) == 2
+    assert body[0]["date"] == "1950-01-01"
+    assert body[0]["kind"] == "life"
+    assert body[1]["date"] == "1971-12-16"
+    assert body[1]["kind"] == "context"
+
+
+@postgres_only
+def test_postgres_person_places_and_migration_geojson(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client = build_postgres_client(monkeypatch, tmp_path)
+    owner_id = create_user(client, "Owner")
+    editor_id = create_user(client, "Editor")
+
+    circle = client.post("/circles", json={"name": "Migration Family"}, headers={"X-User-Id": owner_id})
+    circle_id = circle.json()["id"]
+    add_editor = client.post(
+        f"/circles/{circle_id}/members",
+        json={"user_id": editor_id, "role": "editor"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert add_editor.status_code == 200
+
+    person = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Arun Pai"},
+        headers={"X-User-Id": editor_id},
+    )
+    person_id = person.json()["id"]
+
+    place1 = client.post(
+        f"/circles/{circle_id}/persons/{person_id}/places",
+        json={
+            "place_name": "Udupi",
+            "country": "India",
+            "lat": 13.3409,
+            "lng": 74.7421,
+            "from_date": "1960-01-01",
+        },
+        headers={"X-User-Id": editor_id},
+    )
+    assert place1.status_code == 200
+
+    place2 = client.post(
+        f"/circles/{circle_id}/persons/{person_id}/places",
+        json={
+            "place_name": "Singapore",
+            "country": "Singapore",
+            "lat": 1.3521,
+            "lng": 103.8198,
+            "from_date": "1980-01-01",
+        },
+        headers={"X-User-Id": editor_id},
+    )
+    assert place2.status_code == 200
+
+    listed = client.get(
+        f"/circles/{circle_id}/persons/{person_id}/places",
+        headers={"X-User-Id": owner_id},
+    )
+    assert listed.status_code == 200
+    rows = listed.json()
+    assert len(rows) == 2
+
+    geojson = client.get(
+        f"/circles/{circle_id}/persons/{person_id}/migration-geojson",
+        headers={"X-User-Id": owner_id},
+    )
+    assert geojson.status_code == 200
+    fc = geojson.json()
+    assert fc["type"] == "FeatureCollection"
+    assert len(fc["features"]) == 3
+
+
+@postgres_only
+def test_postgres_discussion_threads_messages(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client = build_postgres_client(monkeypatch, tmp_path)
+    owner_id = create_user(client, "Owner")
+    editor_id = create_user(client, "Editor")
+
+    circle = client.post("/circles", json={"name": "Chat Family"}, headers={"X-User-Id": owner_id})
+    circle_id = circle.json()["id"]
+    add_editor = client.post(
+        f"/circles/{circle_id}/members",
+        json={"user_id": editor_id, "role": "editor"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert add_editor.status_code == 200
+
+    person = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Chat Person"},
+        headers={"X-User-Id": editor_id},
+    )
+    person_id = person.json()["id"]
+
+    thread = client.post(
+        f"/circles/{circle_id}/threads",
+        json={"entity_type": "person", "entity_id": person_id},
+        headers={"X-User-Id": owner_id},
+    )
+    assert thread.status_code == 200
+    thread_id = thread.json()["id"]
+
+    msg = client.post(
+        f"/circles/{circle_id}/threads/{thread_id}/messages",
+        json={"content": "Oral history note"},
+        headers={"X-User-Id": editor_id},
+    )
+    assert msg.status_code == 200
+
+    listed = client.get(
+        f"/circles/{circle_id}/threads/{thread_id}/messages",
+        headers={"X-User-Id": owner_id},
+    )
+    assert listed.status_code == 200
+    rows = listed.json()
+    assert len(rows) == 1
+    assert rows[0]["content"] == "Oral history note"
+
+
+@postgres_only
+def test_postgres_invitation_transfer_and_audit_flow(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client = build_postgres_client(monkeypatch, tmp_path)
+    owner_id = create_user(client, "Owner")
+    editor_id = create_user(client, "Editor")
+    viewer_id = create_user(client, "Viewer")
+
+    owner_headers = auth_headers_for(client, owner_id)
+    editor_headers = auth_headers_for(client, editor_id)
+    viewer_headers = auth_headers_for(client, viewer_id)
+
+    circle = client.post("/circles", json={"name": "Invite Family"}, headers=owner_headers)
+    assert circle.status_code == 200
+    circle_id = circle.json()["id"]
+
+    invite = client.post(
+        f"/circles/{circle_id}/invitations",
+        json={"invited_user_id": editor_id, "role": "editor"},
+        headers=owner_headers,
+    )
+    assert invite.status_code == 200
+    invitation_id = invite.json()["id"]
+
+    my_invites = client.get("/invitations", headers=editor_headers)
+    assert my_invites.status_code == 200
+    assert any(row["id"] == invitation_id and row["status"] == "pending" for row in my_invites.json())
+
+    accepted = client.post(
+        f"/invitations/{invitation_id}/respond",
+        json={"action": "accept"},
+        headers=editor_headers,
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["status"] == "accepted"
+
+    members = client.get(f"/circles/{circle_id}/members", headers=owner_headers)
+    assert members.status_code == 200
+    role_by_user = {row["user_id"]: row["role"] for row in members.json()}
+    assert role_by_user[editor_id] == "editor"
+
+    add_viewer = client.post(
+        f"/circles/{circle_id}/members",
+        json={"user_id": viewer_id, "role": "viewer"},
+        headers=owner_headers,
+    )
+    assert add_viewer.status_code == 200
+
+    transfer = client.post(
+        f"/circles/{circle_id}/ownership/transfer",
+        json={"new_owner_user_id": viewer_id},
+        headers=owner_headers,
+    )
+    assert transfer.status_code == 200
+    assert transfer.json()["user_id"] == viewer_id
+    assert transfer.json()["role"] == "owner"
+
+    former_owner_members = client.get(f"/circles/{circle_id}/members", headers=viewer_headers)
+    assert former_owner_members.status_code == 200
+    role_by_user = {row["user_id"]: row["role"] for row in former_owner_members.json()}
+    assert role_by_user[owner_id] == "viewer"
+    assert role_by_user[viewer_id] == "owner"
+
+    audit = client.get(f"/circles/{circle_id}/audit-logs", headers=viewer_headers)
+    assert audit.status_code == 200
+    actions = [row["action"] for row in audit.json()]
+    assert "circle.created" in actions
+    assert "invitation.created" in actions
+
+
+@postgres_only
+def test_postgres_relationship_validation_update_delete_and_duplicates(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = build_postgres_client(monkeypatch, tmp_path)
+    owner_id = create_user(client, "Owner")
+    editor_id = create_user(client, "Editor")
+    viewer_id = create_user(client, "Viewer")
+
+    circle = client.post("/circles", json={"name": "Relationship Family"}, headers={"X-User-Id": owner_id})
+    circle_id = circle.json()["id"]
+    assert client.post(
+        f"/circles/{circle_id}/members",
+        json={"user_id": editor_id, "role": "editor"},
+        headers={"X-User-Id": owner_id},
+    ).status_code == 200
+    assert client.post(
+        f"/circles/{circle_id}/members",
+        json={"user_id": viewer_id, "role": "viewer"},
+        headers={"X-User-Id": owner_id},
+    ).status_code == 200
+
+    a = client.post(f"/circles/{circle_id}/persons", json={"full_name": "A"}, headers={"X-User-Id": owner_id}).json()["id"]
+    b = client.post(f"/circles/{circle_id}/persons", json={"full_name": "B"}, headers={"X-User-Id": owner_id}).json()["id"]
+    c = client.post(f"/circles/{circle_id}/persons", json={"full_name": "C"}, headers={"X-User-Id": owner_id}).json()["id"]
+
+    invalid = client.post(
+        f"/circles/{circle_id}/relationships",
+        json={"from_person_id": a, "to_person_id": b, "relationship_type": "mentor_of"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert invalid.status_code == 400
+
+    rel_ab = client.post(
+        f"/circles/{circle_id}/relationships",
+        json={"from_person_id": a, "to_person_id": b, "relationship_type": "parent_of"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert rel_ab.status_code == 200
+    rel_ab_id = rel_ab.json()["id"]
+    assert client.post(
+        f"/circles/{circle_id}/relationships",
+        json={"from_person_id": b, "to_person_id": c, "relationship_type": "parent_of"},
+        headers={"X-User-Id": owner_id},
+    ).status_code == 200
+
+    cycle = client.post(
+        f"/circles/{circle_id}/relationships",
+        json={"from_person_id": c, "to_person_id": a, "relationship_type": "parent_of"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert cycle.status_code == 400
+
+    forbidden = client.patch(
+        f"/circles/{circle_id}/relationships/{rel_ab_id}",
+        json={"relationship_type": "spouse_of"},
+        headers={"X-User-Id": viewer_id},
+    )
+    assert forbidden.status_code == 403
+
+    updated = client.patch(
+        f"/circles/{circle_id}/relationships/{rel_ab_id}",
+        json={"relationship_type": "child_of"},
+        headers={"X-User-Id": editor_id},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["relationship_type"] == "child_of"
+
+    deleted = client.delete(
+        f"/circles/{circle_id}/relationships/{rel_ab_id}",
+        headers={"X-User-Id": editor_id},
+    )
+    assert deleted.status_code == 200
+
+    first_duplicate_target = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Ravi Pai", "birth_date": "1970-01-01", "birth_place": "Mumbai"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert first_duplicate_target.status_code == 200
+    hints = client.get(
+        f"/circles/{circle_id}/persons/duplicate-hints",
+        params={"full_name": "Ravi Pai", "birth_date": "1970-01-01", "birth_place": "Mumbai"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert hints.status_code == 200
+    assert len(hints.json()) == 1
+    blocked_duplicate = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Ravi Pai", "birth_date": "1970-01-01", "birth_place": "Mumbai"},
+        headers={"X-User-Id": owner_id},
+    )
+    assert blocked_duplicate.status_code == 409
+
+
+@postgres_only
+def test_postgres_auth_media_and_person_revision(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client = build_postgres_client(monkeypatch, tmp_path)
+    owner_id = create_user(client, "Owner")
+    editor_id = create_user(client, "Editor")
+    viewer_id = create_user(client, "Viewer")
+
+    owner_headers = auth_headers_for(client, owner_id)
+    circle = client.post("/circles", json={"name": "Profile Media Family"}, headers=owner_headers)
+    assert circle.status_code == 200
+    circle_id = circle.json()["id"]
+
+    assert client.post(
+        f"/circles/{circle_id}/members",
+        json={"user_id": editor_id, "role": "editor"},
+        headers=owner_headers,
+    ).status_code == 200
+    assert client.post(
+        f"/circles/{circle_id}/members",
+        json={"user_id": viewer_id, "role": "viewer"},
+        headers=owner_headers,
+    ).status_code == 200
+
+    person = client.post(
+        f"/circles/{circle_id}/persons",
+        json={"full_name": "Meera", "birth_date": "1980-01-01"},
+        headers=owner_headers,
+    )
+    assert person.status_code == 200
+    person_id = person.json()["id"]
+
+    forbidden = client.patch(
+        f"/circles/{circle_id}/persons/{person_id}",
+        json={"occupation": "Engineer"},
+        headers={"X-User-Id": viewer_id},
+    )
+    assert forbidden.status_code == 403
+
+    updated = client.patch(
+        f"/circles/{circle_id}/persons/{person_id}",
+        json={
+            "occupation": "Engineer",
+            "hobbies": "Classical music",
+            "birth_place": "Pune",
+            "revision_reason": "profile_edit",
+        },
+        headers={"X-User-Id": editor_id},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["occupation"] == "Engineer"
+
+    revisions = client.get(
+        f"/circles/{circle_id}/persons/{person_id}/revisions",
+        headers=owner_headers,
+    )
+    assert revisions.status_code == 200
+    rev_rows = revisions.json()
+    assert len(rev_rows) >= 2
+    assert rev_rows[0]["reason"] == "profile_edit"
+
+    upload = client.post(
+        f"/circles/{circle_id}/persons/{person_id}/media",
+        files={"file": ("note.txt", b"hello family media", "text/plain")},
+        headers={"X-User-Id": editor_id},
+    )
+    assert upload.status_code == 200
+    asset_id = upload.json()["id"]
+
+    listed = client.get(
+        f"/circles/{circle_id}/persons/{person_id}/media",
+        headers=owner_headers,
+    )
+    assert listed.status_code == 200
+    assert listed.json()[0]["id"] == asset_id
+
+    downloaded = client.get(
+        f"/circles/{circle_id}/media/{asset_id}/download",
+        headers=owner_headers,
+    )
+    assert downloaded.status_code == 200
+    assert downloaded.content == b"hello family media"
 
 
 def test_subgraph_excludes_spouse_edges_from_lineage_traversal(tmp_path: Path) -> None:

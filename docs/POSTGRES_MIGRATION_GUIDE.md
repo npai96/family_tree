@@ -42,8 +42,13 @@ This gives you a local Postgres instance with the runtime-compatible schema load
 Default dev connection:
 
 ```text
-postgresql://family_tree:family_tree_dev@127.0.0.1:5432/family_tree
+postgresql://family_tree:family_tree_dev@127.0.0.1:5433/family_tree
 ```
+
+Why `5433` instead of `5432`:
+
+- many laptops already have a local Postgres on `5432`
+- the Docker sandbox intentionally uses `5433` to avoid connecting tests/tools to the wrong server
 
 ## Export current SQLite data for PostgreSQL
 
