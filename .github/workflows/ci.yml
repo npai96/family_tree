@@ -18,10 +18,18 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run tests
+      - name: Run frontend tests
+        run: node --test tests/test_graph_utils.js tests/test_privacy_utils.js tests/test_bootstrap_fallback.js
+
+      - name: Run backend tests
         run: pytest -q

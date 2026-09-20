@@ -7,3 +7,6 @@ __pycache__
 app/api/mvp.db
 app/media
 ui_mockups
+
+.env
+.env.*

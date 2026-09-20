@@ -2,6 +2,7 @@ VENV=.venv
 PIP=$(VENV)/bin/pip
 PYTEST=$(VENV)/bin/pytest
 UVICORN=$(VENV)/bin/uvicorn
+NODE=node
 
 .PHONY: setup run test test-postgres postgres-up postgres-down
 
@@ -13,6 +14,7 @@ run:
 	$(UVICORN) app.api.main:app --reload
 
 test:
+	$(NODE) --test tests/test_graph_utils.js tests/test_privacy_utils.js tests/test_error_utils.js tests/test_person_search_utils.js tests/test_bootstrap_fallback.js
 	$(PYTEST) -q
 
 test-postgres:

@@ -1,0 +1,30 @@
+# No AWS resources or paid disks. Select a Free workspace and keep plan: free.
+services:
+  - type: web
+    name: viraasat-family-tree
+    runtime: docker
+    plan: free
+    autoDeployTrigger: "off"
+    healthCheckPath: /health
+    dockerCommand: uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --workers 1 --no-access-log
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: ENABLE_REVIEW_AUTH
+        value: "false"
+      - key: POSTGRES_RUNTIME_ENABLED
+        value: "true"
+      - key: MAX_MEDIA_UPLOAD_BYTES
+        value: "5242880"
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: PUBLIC_APP_URL
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: family-media

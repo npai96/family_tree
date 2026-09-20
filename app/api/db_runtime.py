@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from app.api.db_config import DEFAULT_SQLITE_PATH, DatabaseConfig, build_database_config, load_database_config
+from app.api.security import digest_token, is_token_digest
 
 try:
     import psycopg
@@ -136,6 +137,9 @@ CREATE TABLE IF NOT EXISTS media_assets (
   FOREIGN KEY (uploader_user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE INDEX IF NOT EXISTS idx_media_assets_circle_person_created
+  ON media_assets(circle_id, person_id, created_at DESC, id DESC);
+
 CREATE TABLE IF NOT EXISTS person_places (
   id TEXT PRIMARY KEY,
   circle_id TEXT NOT NULL,
@@ -192,13 +196,28 @@ CREATE TABLE IF NOT EXISTS entity_revisions (
 );
 
 CREATE TABLE IF NOT EXISTS auth_sessions (
-  token TEXT PRIMARY KEY,
+  token TEXT PRIMARY KEY, -- SHA-256 digest of the bearer token; the raw token is never persisted.
   user_id TEXT NOT NULL,
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
   revoked_at TEXT,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS circle_access_tickets (
+  ticket_hash TEXT PRIMARY KEY,
+  session_token TEXT NOT NULL, -- References the session token digest, never a raw bearer token.
+  circle_id TEXT NOT NULL,
+  scope TEXT NOT NULL CHECK (scope IN ('media', 'websocket')),
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  consumed_at TEXT,
+  FOREIGN KEY (session_token) REFERENCES auth_sessions(token) ON DELETE CASCADE,
+  FOREIGN KEY (circle_id) REFERENCES circles(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_circle_access_tickets_expires_at
+  ON circle_access_tickets(expires_at);
 
 CREATE TABLE IF NOT EXISTS circle_invitations (
   id TEXT PRIMARY KEY,
@@ -342,6 +361,27 @@ def execute_many(
     return conn.executemany(_adapt_sql_placeholders(sql), (tuple(params) for params in seq_of_params))
 
 
+def migrate_auth_session_token_digests(conn: Any) -> int:
+    """Hash legacy plaintext session keys without invalidating the raw tokens held by clients."""
+    rows = fetch_all(conn, "SELECT token FROM auth_sessions")
+    plaintext_tokens = [str(row["token"]) for row in rows if not is_token_digest(str(row["token"]))]
+    if not plaintext_tokens:
+        return 0
+
+    # These tickets are intentionally short-lived and can be reissued immediately.
+    # Deleting them avoids carrying foreign keys across the one-time primary-key rewrite.
+    execute(conn, "DELETE FROM circle_access_tickets")
+    migrated = 0
+    for plaintext_token in plaintext_tokens:
+        result = execute(
+            conn,
+            "UPDATE auth_sessions SET token = ? WHERE token = ?",
+            (digest_token(plaintext_token), plaintext_token),
+        )
+        migrated += max(0, result.rowcount)
+    return migrated
+
+
 def _load_postgres_init_sql() -> str:
     return (Path(__file__).resolve().parents[2] / "db" / "runtime_postgres.sql").read_text()
 
@@ -353,12 +393,20 @@ def init_db(media_dir: Path) -> None:
         sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         with get_conn() as conn:
             conn.executescript(SQLITE_INIT_SQL)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_sessions)")}
+            if "auth_source" not in columns:
+                conn.execute("ALTER TABLE auth_sessions ADD COLUMN auth_source TEXT NOT NULL DEFAULT 'review'")
+            migrate_auth_session_token_digests(conn)
         return
 
     if get_db_backend() == "postgres":
         with get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(_load_postgres_init_sql())
+                if os.getenv("SUPABASE_URL"):
+                    privacy_sql = Path(__file__).resolve().parents[2] / "db" / "supabase_privacy.sql"
+                    cur.execute(privacy_sql.read_text())
+            migrate_auth_session_token_digests(conn)
         return
 
     raise RuntimeError(f"Unsupported backend for init_db: {get_db_backend()!r}")

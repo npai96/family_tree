@@ -9,3 +9,5 @@ build/
 app/api/mvp.db
 app/media/
 db/generated/
+
+!.env.hosted.example

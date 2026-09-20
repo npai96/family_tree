@@ -119,6 +119,9 @@ CREATE TABLE IF NOT EXISTS media_assets (
   FOREIGN KEY (uploader_user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE INDEX IF NOT EXISTS idx_media_assets_circle_person_created
+  ON media_assets(circle_id, person_id, created_at DESC, id DESC);
+
 CREATE TABLE IF NOT EXISTS person_places (
   id TEXT PRIMARY KEY,
   circle_id TEXT NOT NULL,
@@ -175,13 +178,28 @@ CREATE TABLE IF NOT EXISTS entity_revisions (
 );
 
 CREATE TABLE IF NOT EXISTS auth_sessions (
-  token TEXT PRIMARY KEY,
+  token TEXT PRIMARY KEY, -- SHA-256 digest of the bearer token; the raw token is never persisted.
   user_id TEXT NOT NULL,
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
   revoked_at TEXT,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS circle_access_tickets (
+  ticket_hash TEXT PRIMARY KEY,
+  session_token TEXT NOT NULL, -- References the session token digest, never a raw bearer token.
+  circle_id TEXT NOT NULL,
+  scope TEXT NOT NULL CHECK (scope IN ('media', 'websocket')),
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  consumed_at TEXT,
+  FOREIGN KEY (session_token) REFERENCES auth_sessions(token) ON DELETE CASCADE,
+  FOREIGN KEY (circle_id) REFERENCES circles(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_circle_access_tickets_expires_at
+  ON circle_access_tickets(expires_at);
 
 CREATE TABLE IF NOT EXISTS circle_invitations (
   id TEXT PRIMARY KEY,
@@ -212,3 +230,5 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 
 COMMIT;
+
+ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS auth_source TEXT NOT NULL DEFAULT 'review';

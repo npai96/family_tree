@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
-import shutil
 import secrets
 import os
+import unicodedata
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -11,22 +11,167 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Literal, Optional
 from uuid import uuid4
+from urllib.parse import quote
 
-from fastapi import FastAPI, Header, HTTPException, Query, UploadFile, File, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, Query, Request, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from app.api.db_runtime import INTEGRITY_ERRORS, configure_database, execute, fetch_all, fetch_one, get_conn, get_db_backend, init_db
+from app.api.observability import REQUEST_METRICS, RequestObservabilityMiddleware
+from app.api.privacy import (
+    SENSITIVE_PERSON_FIELDS,
+    can_read_sensitive_person_fields,
+    contains_sensitive_person_fields,
+    person_response_select_clause,
+    redact_sensitive_json,
+)
+from app.api.security import digest_token, load_runtime_security_config
+from app.api.security_headers import BrowserSecurityHeadersMiddleware
+from app.api import hosted
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 WEB_INDEX_PATH = BASE_DIR / "app" / "web" / "index.html"
+WEB_ASSET_DIR = BASE_DIR / "app" / "web"
+WEB_ASSET_FILES = {
+    "app.css": ("app.css", "text/css"),
+    "app.js": ("app.js", "text/javascript"),
+    "bootstrap.js": ("bootstrap.js", "text/javascript"),
+    "graph-utils.js": ("graph-utils.js", "text/javascript"),
+    "error-utils.js": ("error-utils.js", "text/javascript"),
+    "privacy-utils.js": ("privacy-utils.js", "text/javascript"),
+    "person-search-utils.js": ("person-search-utils.js", "text/javascript"),
+    "vendor/d3-7.9.0.min.js": ("vendor/d3-7.9.0.min.js", "text/javascript"),
+    "vendor/react-18.3.1.production.min.js": ("vendor/react-18.3.1.production.min.js", "text/javascript"),
+    "vendor/react-dom-18.3.1.production.min.js": ("vendor/react-dom-18.3.1.production.min.js", "text/javascript"),
+}
 MEDIA_DIR = Path(os.getenv("MEDIA_DIR", str(BASE_DIR / "app" / "media")))
-ALLOW_LEGACY_X_USER_ID = os.getenv("ALLOW_LEGACY_X_USER_ID", "false").strip().lower() in {"1", "true", "yes", "on"}
+RUNTIME_SECURITY = load_runtime_security_config()
+APP_ENVIRONMENT = RUNTIME_SECURITY.environment
+REVIEW_AUTH_ENABLED = RUNTIME_SECURITY.review_auth_enabled
+hosted.validate_configuration(REVIEW_AUTH_ENABLED)
+ALLOW_LEGACY_X_USER_ID = RUNTIME_SECURITY.legacy_user_header_enabled
+CORS_ALLOWED_ORIGINS = list(RUNTIME_SECURITY.cors_allowed_origins)
+METRICS_ENABLED = RUNTIME_SECURITY.metrics_enabled
+METRICS_BEARER_TOKEN_DIGEST = RUNTIME_SECURITY.metrics_bearer_token_digest
+MEDIA_ACCESS_TICKET_TTL = timedelta(minutes=15)
+WEBSOCKET_ACCESS_TICKET_TTL = timedelta(seconds=60)
+MEDIA_UPLOAD_CHUNK_BYTES = 1024 * 1024
+MEDIA_UPLOAD_SAMPLE_BYTES = 8192
+
+try:
+    MAX_MEDIA_UPLOAD_BYTES = int(os.getenv("MAX_MEDIA_UPLOAD_BYTES", str(25 * 1024 * 1024)))
+except ValueError as exc:  # pragma: no cover - configuration failure is intentionally fatal
+    raise RuntimeError("MAX_MEDIA_UPLOAD_BYTES must be an integer") from exc
+if not 1 <= MAX_MEDIA_UPLOAD_BYTES <= 1024 * 1024 * 1024:  # pragma: no cover - configuration guard
+    raise RuntimeError("MAX_MEDIA_UPLOAD_BYTES must be between 1 byte and 1 GiB")
+
+MEDIA_TYPE_ALIASES = {
+    "application/x-pdf": "application/pdf",
+    "audio/x-m4a": "audio/mp4",
+    "audio/x-wav": "audio/wav",
+    "image/heif": "image/heic",
+    "image/jpg": "image/jpeg",
+    "image/x-tiff": "image/tiff",
+    "video/x-m4v": "video/mp4",
+}
+MEDIA_EXTENSION_BY_TYPE = {
+    "application/pdf": ".pdf",
+    "audio/mp4": ".m4a",
+    "audio/mpeg": ".mp3",
+    "audio/wav": ".wav",
+    "image/gif": ".gif",
+    "image/heic": ".heic",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/tiff": ".tiff",
+    "image/webp": ".webp",
+    "text/plain": ".txt",
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+}
+SAFE_MEDIA_PREVIEW_TYPES = ("image/gif", "image/jpeg", "image/png", "image/webp")
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _media_upload_limit_label() -> str:
+    if MAX_MEDIA_UPLOAD_BYTES < 1024 * 1024:
+        return f"{MAX_MEDIA_UPLOAD_BYTES} byte" + ("" if MAX_MEDIA_UPLOAD_BYTES == 1 else "s")
+    return f"{MAX_MEDIA_UPLOAD_BYTES / (1024 * 1024):g} MiB"
+
+
+def _sniff_media_type(sample: bytes, claimed_type: Optional[str]) -> Optional[str]:
+    raw_claimed = (claimed_type or "").split(";", 1)[0].strip().lower()
+    claimed = MEDIA_TYPE_ALIASES.get(raw_claimed, raw_claimed)
+    if sample.startswith(b"\x89PNG\r\n\x1a\n"):
+        detected = "image/png"
+    elif sample.startswith(b"\xff\xd8\xff"):
+        detected = "image/jpeg"
+    elif sample.startswith((b"GIF87a", b"GIF89a")):
+        detected = "image/gif"
+    elif len(sample) >= 12 and sample[:4] == b"RIFF" and sample[8:12] == b"WEBP":
+        detected = "image/webp"
+    elif sample.startswith((b"II*\x00", b"MM\x00*")):
+        detected = "image/tiff"
+    elif len(sample) >= 12 and sample[4:8] == b"ftyp" and sample[8:12] in {b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1"}:
+        detected = "image/heic"
+    elif sample.startswith(b"%PDF-"):
+        detected = "application/pdf"
+    elif sample.startswith(b"RIFF") and len(sample) >= 12 and sample[8:12] == b"WAVE":
+        detected = "audio/wav"
+    elif sample.startswith(b"ID3") or (len(sample) >= 2 and sample[0] == 0xFF and sample[1] & 0xE0 == 0xE0):
+        detected = "audio/mpeg"
+    elif len(sample) >= 12 and sample[4:8] == b"ftyp":
+        detected = claimed if claimed in {"audio/mp4", "video/mp4", "video/quicktime"} else "video/mp4"
+    elif claimed == "text/plain" and b"\x00" not in sample:
+        try:
+            sample.decode("utf-8")
+        except UnicodeDecodeError:
+            detected = None
+        else:
+            detected = "text/plain"
+    else:
+        detected = None
+
+    if detected and claimed not in {"", "application/octet-stream", detected}:
+        return None
+    return detected
+
+
+def _safe_media_filename(filename: Optional[str], media_type: str) -> str:
+    normalized = unicodedata.normalize("NFKC", filename or "upload")
+    leaf = normalized.replace("\\", "/").rsplit("/", 1)[-1]
+    stem = Path(leaf).stem.strip(" .") or "upload"
+    safe_stem = "".join(
+        character if character.isalnum() or character in {" ", "-", "_", "."} else "_"
+        for character in stem
+        if character.isprintable()
+    ).strip(" .") or "upload"
+    return f"{safe_stem[:140]}{MEDIA_EXTENSION_BY_TYPE.get(media_type, '.bin')}"
+
+
+def _remove_media_file(path: Optional[Path]) -> None:
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _media_file_path(circle_id: str, person_id: str, stored_filename: str) -> Path:
+    person_dir = (MEDIA_DIR / circle_id / person_id).resolve()
+    candidate = (person_dir / stored_filename).resolve()
+    try:
+        candidate.relative_to(person_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Media file path is invalid") from exc
+    return candidate
 
 
 @asynccontextmanager
@@ -36,13 +181,16 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Family Tree MVP API", version="0.2.0", lifespan=lifespan)
+app.add_middleware(RequestObservabilityMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=CORS_ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-User-Id"],
+    expose_headers=["X-Request-Id", "Server-Timing"],
 )
+app.add_middleware(BrowserSecurityHeadersMiddleware)
 
 
 class UserCreate(BaseModel):
@@ -64,6 +212,24 @@ class AuthLoginOut(BaseModel):
     access_token: str
     token_type: Literal["bearer"] = "bearer"
     user: UserOut
+    expires_at: str
+
+
+class RuntimeConfigOut(BaseModel):
+    environment: Literal["development", "test", "staging", "production"]
+    auth_mode: Literal["review_unverified", "disabled", "supabase"]
+    review_auth_enabled: bool
+    identity_verification: Literal["none", "unavailable", "verified"]
+    warning: str
+
+
+class CircleAccessTicketRequest(BaseModel):
+    scope: Literal["media", "websocket"]
+
+
+class CircleAccessTicketOut(BaseModel):
+    ticket: str
+    scope: Literal["media", "websocket"]
     expires_at: str
 
 
@@ -135,7 +301,10 @@ class PersonCreate(BaseModel):
     occupation: Optional[str] = None
     hobbies: Optional[str] = None
     personality: Optional[str] = None
-    medical_notes: Optional[str] = None
+    medical_notes: Optional[str] = Field(
+        default=None,
+        description="Sensitive field returned only to circle owners and editors.",
+    )
     bio_text: Optional[str] = None
 
 
@@ -156,7 +325,10 @@ class PersonUpdate(BaseModel):
     occupation: Optional[str] = None
     hobbies: Optional[str] = None
     personality: Optional[str] = None
-    medical_notes: Optional[str] = None
+    medical_notes: Optional[str] = Field(
+        default=None,
+        description="Sensitive field writable and readable only by circle owners and editors.",
+    )
     bio_text: Optional[str] = None
     revision_reason: Optional[str] = None
 
@@ -332,6 +504,13 @@ class MediaAssetOut(BaseModel):
     created_at: str
 
 
+class MediaPreviewOut(BaseModel):
+    person_id: str
+    asset_id: str
+    mime_type: Optional[str] = None
+    created_at: str
+
+
 class SubgraphOut(BaseModel):
     persons: list[PersonOut]
     relationships: list[RelationshipOut]
@@ -350,8 +529,8 @@ class CircleWSManager:
     def __init__(self) -> None:
         self.connections: dict[str, set[WebSocket]] = {}
 
-    async def connect(self, circle_id: str, ws: WebSocket) -> None:
-        await ws.accept()
+    async def connect(self, circle_id: str, ws: WebSocket, subprotocol: Optional[str] = None) -> None:
+        await ws.accept(subprotocol=subprotocol)
         self.connections.setdefault(circle_id, set()).add(ws)
 
     def disconnect(self, circle_id: str, ws: WebSocket) -> None:
@@ -408,24 +587,119 @@ def _extract_bearer_token(authorization: Optional[str]) -> Optional[str]:
     return parts[1].strip()
 
 
+def _legacy_user_header_enabled() -> bool:
+    return REVIEW_AUTH_ENABLED and ALLOW_LEGACY_X_USER_ID
+
+
+def _require_review_auth_enabled() -> None:
+    if not REVIEW_AUTH_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail="Authentication is not configured for this deployment; review-only access is disabled",
+        )
+
+
+def _runtime_auth_payload() -> dict[str, Any]:
+    if hosted.ENABLED:
+        return {"environment": APP_ENVIRONMENT, "auth_mode": "supabase",
+                "review_auth_enabled": False, "identity_verification": "verified",
+                "warning": "Sign in with Google. Your private circles are saved across devices."}
+    if REVIEW_AUTH_ENABLED:
+        return {
+            "environment": APP_ENVIRONMENT,
+            "auth_mode": "review_unverified",
+            "review_auth_enabled": True,
+            "identity_verification": "none",
+            "warning": (
+                "Review access is enabled. User selection does not verify identity; "
+                "do not expose this mode to untrusted users."
+            ),
+        }
+    return {
+        "environment": APP_ENVIRONMENT,
+        "auth_mode": "disabled",
+        "review_auth_enabled": False,
+        "identity_verification": "unavailable",
+        "warning": (
+            "Authentication is not configured for this deployment. "
+            "Review-only user selection is disabled."
+        ),
+    }
+
+
 def _user_id_from_session_token(conn: Any, token: Optional[str]) -> Optional[str]:
-    if not token:
+    if not (REVIEW_AUTH_ENABLED or hosted.ENABLED) or not token:
         return None
+    token_digest = digest_token(token)
     row = fetch_one(
         conn,
         """
-        SELECT user_id, expires_at, revoked_at
+        SELECT user_id, expires_at, revoked_at, auth_source
         FROM auth_sessions
         WHERE token = ?
         """,
-        (token,),
+        (token_digest,),
     )
     if not row:
+        return None
+    if row["auth_source"] != ("supabase" if hosted.ENABLED else "review"):
         return None
     if row["revoked_at"] is not None:
         return None
     if row["expires_at"] < utc_now():
         return None
+    return str(row["user_id"])
+
+
+def _hash_access_ticket(ticket: str) -> str:
+    return digest_token(ticket)
+
+
+def _user_id_from_circle_access_ticket(
+    conn: Any,
+    ticket: Optional[str],
+    circle_id: str,
+    scope: Literal["media", "websocket"],
+    *,
+    consume: bool = False,
+) -> Optional[str]:
+    if not (REVIEW_AUTH_ENABLED or hosted.ENABLED) or not ticket:
+        return None
+
+    now = utc_now()
+    ticket_hash = _hash_access_ticket(ticket)
+    row = fetch_one(
+        conn,
+        """
+        SELECT session.user_id
+        FROM circle_access_tickets AS ticket
+        INNER JOIN auth_sessions AS session ON session.token = ticket.session_token
+        WHERE ticket.ticket_hash = ?
+          AND ticket.circle_id = ?
+          AND ticket.scope = ?
+          AND ticket.expires_at >= ?
+          AND session.expires_at >= ?
+          AND session.revoked_at IS NULL
+          AND session.auth_source = ?
+          AND (? = 0 OR ticket.consumed_at IS NULL)
+        """,
+        (ticket_hash, circle_id, scope, now, now, "supabase" if hosted.ENABLED else "review", int(consume)),
+    )
+    if not row:
+        return None
+
+    if consume:
+        consumed = execute(
+            conn,
+            """
+            UPDATE circle_access_tickets
+            SET consumed_at = ?
+            WHERE ticket_hash = ? AND consumed_at IS NULL
+            """,
+            (now, ticket_hash),
+        )
+        if consumed.rowcount != 1:
+            return None
     return str(row["user_id"])
 
 
@@ -438,7 +712,7 @@ def _require_authenticated_user(
     user_id = _user_id_from_session_token(conn, token)
     if user_id:
         return _require_user(conn, user_id)
-    if ALLOW_LEGACY_X_USER_ID and x_user_id:
+    if _legacy_user_header_enabled() and x_user_id:
         return _require_user(conn, x_user_id)
     raise HTTPException(status_code=401, detail="Missing or invalid auth token")
 
@@ -480,6 +754,57 @@ def _get_role(conn: Any, circle_id: str, user_id: str) -> str:
     if not row:
         raise HTTPException(status_code=403, detail="Not a member of this circle")
     return str(row["role"])
+
+
+def _person_out(row: Any, role: str) -> PersonOut:
+    payload = dict(row)
+    if not can_read_sensitive_person_fields(role):
+        for field in SENSITIVE_PERSON_FIELDS:
+            payload[field] = None
+    return PersonOut(**payload)
+
+
+def _audit_log_out(row: Any, role: str) -> AuditLogOut:
+    payload = dict(row)
+    payload["payload_json"] = redact_sensitive_json(payload.get("payload_json"), role, fallback=None)
+    return AuditLogOut(**payload)
+
+
+def _entity_revision_out(row: Any, role: str) -> EntityRevisionOut:
+    payload = dict(row)
+    payload["snapshot_json"] = redact_sensitive_json(payload.get("snapshot_json"), role, fallback="{}") or "{}"
+    return EntityRevisionOut(**payload)
+
+
+def _change_request_out(row: Any, role: str) -> ChangeRequestOut:
+    payload = dict(row)
+    payload["proposed_patch_json"] = (
+        redact_sensitive_json(payload.get("proposed_patch_json"), role, fallback="{}") or "{}"
+    )
+    return ChangeRequestOut(**payload)
+
+
+DISCUSSION_ENTITY_TABLES = {
+    "person": "persons",
+    "relationship": "relationships",
+    "change_request": "change_requests",
+}
+
+
+def _require_discussion_entity_exists(
+    conn: Any,
+    circle_id: str,
+    entity_type: Literal["person", "relationship", "change_request"],
+    entity_id: str,
+) -> None:
+    table = DISCUSSION_ENTITY_TABLES[entity_type]
+    row = fetch_one(
+        conn,
+        f"SELECT id FROM {table} WHERE id = ? AND circle_id = ?",
+        (entity_id, circle_id),
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Discussion entity not found in circle")
 
 
 def _require_circle_role(conn: Any, circle_id: str, user_id: str, allowed_roles: set[str]) -> str:
@@ -810,14 +1135,71 @@ def _compute_subgraph(
     return seen_person_ids, seen_edges
 
 
+app.include_router(hosted.router)
+
+
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "db_backend": get_db_backend()}
+def health() -> dict[str, Any]:
+    auth = _runtime_auth_payload()
+    return {
+        "status": "ok",
+        "db_backend": get_db_backend(),
+        "environment": APP_ENVIRONMENT,
+        "auth_mode": auth["auth_mode"],
+        "review_auth_enabled": REVIEW_AUTH_ENABLED,
+        "legacy_user_header_enabled": _legacy_user_header_enabled(),
+        "metrics_enabled": METRICS_ENABLED,
+    }
+
+
+@app.get("/metrics", include_in_schema=False)
+def metrics(
+    response: Response,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    if not METRICS_ENABLED:
+        raise HTTPException(status_code=404, detail="Not found")
+    if METRICS_BEARER_TOKEN_DIGEST:
+        token = _extract_bearer_token(authorization)
+        if not token or not secrets.compare_digest(digest_token(token), METRICS_BEARER_TOKEN_DIGEST):
+            raise HTTPException(status_code=401, detail="Missing or invalid metrics token")
+    response.headers["Cache-Control"] = "no-store"
+    return REQUEST_METRICS.snapshot()
+
+
+@app.get("/runtime-config", response_model=RuntimeConfigOut)
+def runtime_config(response: Response) -> RuntimeConfigOut:
+    response.headers["Cache-Control"] = "no-store"
+    return RuntimeConfigOut(**_runtime_auth_payload())
 
 
 @app.get("/", include_in_schema=False)
 def web_app() -> FileResponse:
-    return FileResponse(WEB_INDEX_PATH)
+    return FileResponse(WEB_INDEX_PATH, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/assets/{asset_path:path}", include_in_schema=False)
+def web_asset(asset_path: str, request: Request) -> Response:
+    asset = WEB_ASSET_FILES.get(asset_path)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    relative_path, media_type = asset
+    resolved_asset_path = WEB_ASSET_DIR / relative_path
+    response = FileResponse(
+        resolved_asset_path,
+        media_type=media_type,
+        headers={"Cache-Control": "no-cache"},
+        stat_result=resolved_asset_path.stat(),
+    )
+    if request.headers.get("If-None-Match") == response.headers.get("ETag"):
+        return Response(
+            status_code=304,
+            headers={
+                "Cache-Control": "no-cache",
+                "ETag": response.headers["ETag"],
+            },
+        )
+    return response
 
 
 @app.get("/favicon.ico", include_in_schema=False)
@@ -830,20 +1212,39 @@ async def circle_ws(
     circle_id: str,
     websocket: WebSocket,
     user_id: Optional[str] = None,
-    token: Optional[str] = None,
 ) -> None:
+    offered_subprotocols = [
+        value.strip()
+        for value in websocket.headers.get("sec-websocket-protocol", "").split(",")
+        if value.strip()
+    ]
+    ticket_protocol = next(
+        (value for value in offered_subprotocols if value.startswith("family-tree-ticket.")),
+        "",
+    )
+    ticket = ticket_protocol.removeprefix("family-tree-ticket.") or None
+    accepted_subprotocol = "family-tree.v1" if "family-tree.v1" in offered_subprotocols else None
     with get_conn() as conn:
-        token_user_id = _user_id_from_session_token(conn, token)
-        resolved_user_id = token_user_id
-        if not resolved_user_id and ALLOW_LEGACY_X_USER_ID:
+        resolved_user_id = _user_id_from_circle_access_ticket(
+            conn,
+            ticket,
+            circle_id,
+            "websocket",
+            consume=True,
+        )
+        if not resolved_user_id and _legacy_user_header_enabled():
             resolved_user_id = user_id
         if not resolved_user_id:
             await websocket.close(code=1008)
             return
-        _require_user(conn, resolved_user_id)
-        _get_role(conn, circle_id, resolved_user_id)
+        try:
+            _require_user(conn, resolved_user_id)
+            _get_role(conn, circle_id, resolved_user_id)
+        except HTTPException:
+            await websocket.close(code=1008)
+            return
 
-    await ws_manager.connect(circle_id, websocket)
+    await ws_manager.connect(circle_id, websocket, subprotocol=accepted_subprotocol)
     await ws_manager.broadcast(
         circle_id,
         {"type": "presence.updated", "circle_id": circle_id, "user_id": resolved_user_id, "state": "joined"},
@@ -861,6 +1262,7 @@ async def circle_ws(
 
 @app.post("/users", response_model=UserOut)
 def create_user(payload: UserCreate) -> UserOut:
+    _require_review_auth_enabled()
     user_id = str(uuid4())
     now = utc_now()
     with get_conn() as conn:
@@ -874,6 +1276,7 @@ def create_user(payload: UserCreate) -> UserOut:
 
 @app.get("/users", response_model=list[UserOut])
 def list_users() -> list[UserOut]:
+    _require_review_auth_enabled()
     with get_conn() as conn:
         rows = fetch_all(conn, "SELECT id, display_name, created_at FROM users ORDER BY created_at DESC")
     return [UserOut(**dict(row)) for row in rows]
@@ -881,6 +1284,7 @@ def list_users() -> list[UserOut]:
 
 @app.post("/auth/login", response_model=AuthLoginOut)
 def auth_login(payload: AuthLoginRequest) -> AuthLoginOut:
+    _require_review_auth_enabled()
     now = utc_now()
     expires_at = (datetime.now(timezone.utc) + timedelta(days=14)).isoformat()
     token = secrets.token_urlsafe(32)
@@ -922,7 +1326,7 @@ def auth_login(payload: AuthLoginRequest) -> AuthLoginOut:
             INSERT INTO auth_sessions (token, user_id, created_at, expires_at, revoked_at)
             VALUES (?, ?, ?, ?, NULL)
             """,
-            (token, user_row["id"], now, expires_at),
+            (digest_token(token), user_row["id"], now, expires_at),
         )
 
     return AuthLoginOut(
@@ -930,6 +1334,25 @@ def auth_login(payload: AuthLoginRequest) -> AuthLoginOut:
         user=UserOut(**dict(user_row)),
         expires_at=expires_at,
     )
+
+
+@app.post("/auth/logout", status_code=204)
+def auth_logout(authorization: Optional[str] = Header(default=None)) -> Response:
+    token = _extract_bearer_token(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing or invalid auth token")
+
+    token_digest = digest_token(token)
+    with get_conn() as conn:
+        session = fetch_one(conn, "SELECT token FROM auth_sessions WHERE token = ?", (token_digest,))
+        if not session:
+            raise HTTPException(status_code=401, detail="Missing or invalid auth token")
+        execute(
+            conn,
+            "UPDATE auth_sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE token = ?",
+            (utc_now(), token_digest),
+        )
+    return Response(status_code=204)
 
 
 @app.get("/auth/me", response_model=UserOut)
@@ -947,6 +1370,75 @@ def auth_me(
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
     return UserOut(**dict(row))
+
+
+@app.post("/circles/{circle_id}/access-tickets", response_model=CircleAccessTicketOut)
+def issue_circle_access_ticket(
+    circle_id: str,
+    payload: CircleAccessTicketRequest,
+    response: Response,
+    authorization: Optional[str] = Header(default=None),
+) -> CircleAccessTicketOut:
+    session_token = _extract_bearer_token(authorization)
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    ttl = MEDIA_ACCESS_TICKET_TTL if payload.scope == "media" else WEBSOCKET_ACCESS_TICKET_TTL
+    expires_at = (now_dt + ttl).isoformat()
+    ticket = secrets.token_urlsafe(32)
+
+    with get_conn() as conn:
+        actor_user_id = _user_id_from_session_token(conn, session_token)
+        if not actor_user_id or not session_token:
+            raise HTTPException(status_code=401, detail="Missing or invalid auth token")
+        _require_user(conn, actor_user_id)
+        _get_role(conn, circle_id, actor_user_id)
+        execute(conn, "DELETE FROM circle_access_tickets WHERE expires_at < ?", (now,))
+        execute(
+            conn,
+            """
+            INSERT INTO circle_access_tickets (
+              ticket_hash, session_token, circle_id, scope, created_at, expires_at, consumed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (_hash_access_ticket(ticket), digest_token(session_token), circle_id, payload.scope, now, expires_at),
+        )
+
+    response.headers["Cache-Control"] = "no-store"
+    return CircleAccessTicketOut(ticket=ticket, scope=payload.scope, expires_at=expires_at)
+
+
+@app.post("/demo/sample-circle", response_model=CircleOut)
+def create_sample_circle(authorization: Optional[str] = Header(default=None)) -> CircleOut:
+    """One private, fictional starter circle per account; creation is atomic."""
+    from uuid import NAMESPACE_URL, uuid5
+    now = utc_now()
+    with get_conn() as conn:
+        actor = _require_authenticated_user(conn, None, authorization)
+        circle_id = str(uuid5(NAMESPACE_URL, "viraasat:sample:" + actor))
+        inserted = execute(conn, "INSERT INTO circles (id, name, created_at) VALUES (?, ?, ?) ON CONFLICT (id) DO NOTHING",
+                           (circle_id, "The Rao family · fictional sample", now))
+        if inserted.rowcount:
+            execute(conn, "INSERT INTO circle_memberships (circle_id, user_id, role, created_at) VALUES (?, ?, 'owner', ?)", (circle_id, actor, now))
+            people = []
+            for name, birth, place, occupation in [
+                ("Meera Rao", "1948-04-12", "Mangaluru", "Teacher"),
+                ("Arun Rao", "1945-09-03", "Mysuru", "Engineer"),
+                ("Kavya Rao", "1975-06-21", "Bengaluru", "Architect"),
+                ("Nikhil Rao", "1978-11-08", "Bengaluru", "Musician"),
+                ("Tara Rao", "2003-02-17", "Pune", "Student"),
+            ]:
+                person_id = str(uuid4())
+                people.append(person_id)
+                execute(conn, "INSERT INTO persons (id, circle_id, full_name, birth_date, birth_place, occupation, bio_text, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (person_id, circle_id, name, birth, place, occupation, "Fictional sample person for interaction testing. Try editing this story.", now, now))
+                _insert_person_revision(conn, circle_id, person_id, actor, "fictional_sample_created")
+            _log_audit(conn, circle_id, actor, "sample.created", "circle", circle_id)
+            for a, b, kind in [(0, 1, "spouse_of"), (0, 2, "parent_of"), (1, 2, "parent_of"), (0, 3, "parent_of"), (1, 3, "parent_of"), (2, 4, "parent_of")]:
+                execute(conn, "INSERT INTO relationships (id, circle_id, from_person_id, to_person_id, relationship_type, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                        (str(uuid4()), circle_id, people[a], people[b], kind, now))
+        _get_role(conn, circle_id, actor)
+        row = fetch_one(conn, "SELECT id, name, created_at FROM circles WHERE id = ?", (circle_id,))
+    return CircleOut(**dict(row))
 
 
 @app.post("/circles", response_model=CircleOut)
@@ -1330,7 +1822,7 @@ def list_audit_logs(
 ) -> list[AuditLogOut]:
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        _get_role(conn, circle_id, actor_user_id)
+        role = _get_role(conn, circle_id, actor_user_id)
         rows = fetch_all(
             conn,
             """
@@ -1342,7 +1834,7 @@ def list_audit_logs(
             """,
             (circle_id, limit),
         )
-    return [AuditLogOut(**dict(row)) for row in rows]
+    return [_audit_log_out(row, role) for row in rows]
 
 
 @app.post("/circles/{circle_id}/persons", response_model=PersonOut)
@@ -1358,7 +1850,7 @@ def create_person(
     _validate_person_dates(payload.birth_date, payload.death_date)
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        role = _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
         dup_hints = _find_person_duplicates(
             conn,
             circle_id,
@@ -1405,7 +1897,7 @@ def create_person(
             entity_id=person_id,
             payload={"full_name": normalized_name},
         )
-    return PersonOut(**dict(row))
+    return _person_out(row, role)
 
 
 @app.get("/circles/{circle_id}/persons", response_model=list[PersonOut])
@@ -1416,13 +1908,14 @@ def list_persons(
 ) -> list[PersonOut]:
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        _get_role(conn, circle_id, actor_user_id)
+        role = _get_role(conn, circle_id, actor_user_id)
+        person_columns = person_response_select_clause(role)
         rows = fetch_all(
             conn,
-            "SELECT * FROM persons WHERE circle_id = ? ORDER BY created_at DESC",
+            f"SELECT {person_columns} FROM persons WHERE circle_id = ? ORDER BY created_at DESC",
             (circle_id,),
         )
-    return [PersonOut(**dict(row)) for row in rows]
+    return [_person_out(row, role) for row in rows]
 
 
 @app.patch("/circles/{circle_id}/persons/{person_id}", response_model=PersonOut)
@@ -1462,7 +1955,7 @@ def update_person(
 
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        role = _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
         existing = fetch_one(
             conn,
             "SELECT * FROM persons WHERE id = ? AND circle_id = ?",
@@ -1495,10 +1988,13 @@ def update_person(
             action="person.updated",
             entity_type="person",
             entity_id=person_id,
-            payload=patch,
+            payload={
+                "changed_fields": sorted(patch),
+                "sensitive_fields_changed": sorted(SENSITIVE_PERSON_FIELDS.intersection(patch)),
+            },
         )
         row = fetch_one(conn, "SELECT * FROM persons WHERE id = ? AND circle_id = ?", (person_id, circle_id))
-    return PersonOut(**dict(row))
+    return _person_out(row, role)
 
 
 @app.get("/circles/{circle_id}/persons/duplicate-hints", response_model=list[DuplicateHintOut])
@@ -1534,7 +2030,7 @@ def list_person_revisions(
 ) -> list[EntityRevisionOut]:
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        _get_role(conn, circle_id, actor_user_id)
+        role = _get_role(conn, circle_id, actor_user_id)
         person = fetch_one(
             conn,
             "SELECT id FROM persons WHERE id = ? AND circle_id = ?",
@@ -1552,7 +2048,7 @@ def list_person_revisions(
             """,
             (circle_id, person_id),
         )
-    return [EntityRevisionOut(**dict(row)) for row in rows]
+    return [_entity_revision_out(row, role) for row in rows]
 
 
 @app.post("/circles/{circle_id}/persons/{person_id}/places", response_model=PersonPlaceOut)
@@ -1710,36 +2206,94 @@ async def upload_person_media(
 
     person_dir = MEDIA_DIR / circle_id / person_id
     person_dir.mkdir(parents=True, exist_ok=True)
-    original_name = file.filename or "upload.bin"
-    stored_name = f"{asset_id}_{original_name}"
-    stored_path = person_dir / stored_name
+    temporary_path = person_dir / f".{asset_id}.uploading"
+    stored_path: Optional[Path] = None
+    metadata_inserted = False
+    remote_key = None
+    try:
+        size_hint = getattr(file, "size", None)
+        if size_hint == 0:
+            raise HTTPException(status_code=400, detail="Empty media files are not supported")
+        if size_hint is not None and size_hint > MAX_MEDIA_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Media file exceeds the {_media_upload_limit_label()} upload limit",
+            )
 
-    with stored_path.open("wb") as out:
-        shutil.copyfileobj(file.file, out)
-    bytes_size = stored_path.stat().st_size
+        bytes_size = 0
+        sample = bytearray()
+        with temporary_path.open("xb") as destination:
+            while chunk := await file.read(MEDIA_UPLOAD_CHUNK_BYTES):
+                bytes_size += len(chunk)
+                if bytes_size > MAX_MEDIA_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Media file exceeds the {_media_upload_limit_label()} upload limit",
+                    )
+                if len(sample) < MEDIA_UPLOAD_SAMPLE_BYTES:
+                    remaining = MEDIA_UPLOAD_SAMPLE_BYTES - len(sample)
+                    sample.extend(chunk[:remaining])
+                await run_in_threadpool(destination.write, chunk)
 
-    with get_conn() as conn:
-        execute(
-            conn,
-            """
-            INSERT INTO media_assets (
-              id, circle_id, person_id, uploader_user_id, original_filename, stored_filename, mime_type, bytes, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                asset_id,
-                circle_id,
-                person_id,
-                actor_user_id,
-                original_name,
-                stored_name,
-                file.content_type,
-                bytes_size,
-                now,
-            ),
-        )
-        row = fetch_one(conn, "SELECT * FROM media_assets WHERE id = ?", (asset_id,))
-    return MediaAssetOut(**dict(row))
+        if bytes_size == 0:
+            raise HTTPException(status_code=400, detail="Empty media files are not supported")
+        media_type = _sniff_media_type(bytes(sample), file.content_type)
+        if not media_type or media_type not in MEDIA_EXTENSION_BY_TYPE:
+            raise HTTPException(
+                status_code=415,
+                detail="Unsupported or mismatched media format. Use JPEG, PNG, WebP, GIF, HEIC, TIFF, PDF, UTF-8 text, MP3, WAV, M4A, MP4, or MOV.",
+            )
+
+        original_name = _safe_media_filename(file.filename, media_type)
+        stored_name = f"{asset_id}{MEDIA_EXTENSION_BY_TYPE[media_type]}"
+        stored_path = person_dir / stored_name
+        temporary_path.replace(stored_path)
+        if hosted.ENABLED:
+            remote_key = f"{circle_id}/{person_id}/{stored_name}"
+            await run_in_threadpool(hosted.upload_object, remote_key, stored_path, media_type)
+
+        with get_conn() as conn:
+            execute(
+                conn,
+                """
+                INSERT INTO media_assets (
+                  id, circle_id, person_id, uploader_user_id, original_filename, stored_filename, mime_type, bytes, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    asset_id,
+                    circle_id,
+                    person_id,
+                    actor_user_id,
+                    original_name,
+                    stored_name,
+                    media_type,
+                    bytes_size,
+                    now,
+                ),
+            )
+            row = fetch_one(conn, "SELECT * FROM media_assets WHERE id = ?", (asset_id,))
+        metadata_inserted = True
+        if hosted.ENABLED:
+            _remove_media_file(stored_path)
+        return MediaAssetOut(**dict(row))
+    except Exception:
+        if remote_key:
+            try:
+                await run_in_threadpool(hosted.delete_object, remote_key)
+            except Exception:
+                pass
+        if metadata_inserted:
+            try:
+                with get_conn() as conn:
+                    execute(conn, "DELETE FROM media_assets WHERE id = ?", (asset_id,))
+            except Exception:
+                pass
+        _remove_media_file(temporary_path)
+        _remove_media_file(stored_path)
+        raise
+    finally:
+        await file.close()
 
 
 @app.get("/circles/{circle_id}/persons/{person_id}/media", response_model=list[MediaAssetOut])
@@ -1758,11 +2312,50 @@ def list_person_media(
             SELECT *
             FROM media_assets
             WHERE circle_id = ? AND person_id = ?
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             """,
             (circle_id, person_id),
         )
     return [MediaAssetOut(**dict(row)) for row in rows]
+
+
+@app.get("/circles/{circle_id}/media-previews", response_model=list[MediaPreviewOut])
+def list_circle_media_previews(
+    circle_id: str,
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> list[MediaPreviewOut]:
+    preview_placeholders = ", ".join("?" for _ in SAFE_MEDIA_PREVIEW_TYPES)
+    with get_conn() as conn:
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
+        _get_role(conn, circle_id, actor_user_id)
+        rows = fetch_all(
+            conn,
+            f"""
+            SELECT
+              asset.person_id,
+              asset.id AS asset_id,
+              asset.mime_type,
+              asset.created_at
+            FROM media_assets AS asset
+            WHERE asset.circle_id = ?
+              AND asset.mime_type IN ({preview_placeholders})
+              AND NOT EXISTS (
+                SELECT 1
+                FROM media_assets AS newer
+                WHERE newer.circle_id = asset.circle_id
+                  AND newer.person_id = asset.person_id
+                  AND newer.mime_type IN ({preview_placeholders})
+                  AND (
+                    newer.created_at > asset.created_at
+                    OR (newer.created_at = asset.created_at AND newer.id > asset.id)
+                  )
+              )
+            ORDER BY asset.person_id
+            """,
+            (circle_id, *SAFE_MEDIA_PREVIEW_TYPES, *SAFE_MEDIA_PREVIEW_TYPES),
+        )
+    return [MediaPreviewOut(**dict(row)) for row in rows]
 
 
 @app.get("/circles/{circle_id}/media/{asset_id}/download")
@@ -1770,16 +2363,17 @@ def download_media(
     circle_id: str,
     asset_id: str,
     user_id: Optional[str] = Query(default=None),
-    token: Optional[str] = Query(default=None),
+    ticket: Optional[str] = Query(default=None),
     x_user_id: Optional[str] = Header(default=None),
     authorization: Optional[str] = Header(default=None),
-) -> FileResponse:
-    auth_user_id = x_user_id or user_id
-    auth_header = authorization
-    if not auth_header and token:
-        auth_header = f"Bearer {token}"
+) -> Response:
     with get_conn() as conn:
-        actor_user_id = _require_authenticated_user(conn, auth_user_id, auth_header)
+        if authorization or (_legacy_user_header_enabled() and (x_user_id or user_id)):
+            actor_user_id = _require_authenticated_user(conn, x_user_id or user_id, authorization)
+        else:
+            actor_user_id = _user_id_from_circle_access_ticket(conn, ticket, circle_id, "media")
+            if not actor_user_id:
+                raise HTTPException(status_code=401, detail="Missing or invalid media access ticket")
         _get_role(conn, circle_id, actor_user_id)
         row = fetch_one(
             conn,
@@ -1789,13 +2383,23 @@ def download_media(
         if not row:
             raise HTTPException(status_code=404, detail="Media asset not found")
 
-    file_path = MEDIA_DIR / circle_id / row["person_id"] / row["stored_filename"]
-    if not file_path.exists():
+    if hosted.ENABLED:
+        content = hosted.read_object(f"{circle_id}/{row['person_id']}/{row['stored_filename']}")
+        return Response(content, media_type=row["mime_type"] or "application/octet-stream",
+                        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
+                                 "Content-Disposition": "attachment; filename*=utf-8''" + quote(_safe_media_filename(row["original_filename"], row["mime_type"] or "application/octet-stream"))})
+    file_path = _media_file_path(circle_id, row["person_id"], row["stored_filename"])
+    if not file_path.is_file():
         raise HTTPException(status_code=404, detail="Media file missing on disk")
     return FileResponse(
         file_path,
         media_type=row["mime_type"] or "application/octet-stream",
-        filename=row["original_filename"],
+        filename=_safe_media_filename(row["original_filename"], row["mime_type"] or "application/octet-stream"),
+        headers={
+            "Cache-Control": "private, max-age=300",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 
@@ -2092,7 +2696,8 @@ def list_context_event_persons(
 ) -> list[PersonOut]:
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        _get_role(conn, circle_id, actor_user_id)
+        role = _get_role(conn, circle_id, actor_user_id)
+        person_columns = person_response_select_clause(role, "p")
         event = fetch_one(
             conn,
             "SELECT id FROM context_events WHERE id = ? AND circle_id = ?",
@@ -2102,8 +2707,8 @@ def list_context_event_persons(
             raise HTTPException(status_code=404, detail="Context event not found in circle")
         rows = fetch_all(
             conn,
-            """
-            SELECT p.*
+            f"""
+            SELECT {person_columns}
             FROM persons p
             INNER JOIN person_context_links pcl ON pcl.person_id = p.id
             WHERE pcl.circle_id = ? AND pcl.context_event_id = ?
@@ -2111,7 +2716,7 @@ def list_context_event_persons(
             """,
             (circle_id, context_event_id),
         )
-    return [PersonOut(**dict(row)) for row in rows]
+    return [_person_out(row, role) for row in rows]
 
 
 @app.post("/circles/{circle_id}/persons/{person_id}/context-links", response_model=PersonContextLinkOut)
@@ -2197,7 +2802,11 @@ def get_person_timeline(
 
         person = fetch_one(
             conn,
-            "SELECT * FROM persons WHERE id = ? AND circle_id = ?",
+            """
+            SELECT id, full_name, birth_date, death_date, birth_place
+            FROM persons
+            WHERE id = ? AND circle_id = ?
+            """,
             (person_id, circle_id),
         )
         if not person:
@@ -2305,14 +2914,18 @@ def get_subgraph(
     )
 
     with get_conn() as conn:
+        # Traversal may take longer than a simple list query, so re-check the
+        # membership immediately before serializing sensitive person fields.
+        role = _get_role(conn, circle_id, actor_user_id)
+        person_columns = person_response_select_clause(role)
         placeholders = ",".join("?" for _ in seen_person_ids)
         person_rows = fetch_all(
             conn,
-            f"SELECT * FROM persons WHERE circle_id = ? AND id IN ({placeholders})",
+            f"SELECT {person_columns} FROM persons WHERE circle_id = ? AND id IN ({placeholders})",
             (circle_id, *seen_person_ids),
         )
 
-    persons = [PersonOut(**dict(row)) for row in person_rows]
+    persons = [_person_out(row, role) for row in person_rows]
     rels = [
         RelationshipOut(
             id=edge.edge_id,
@@ -2377,7 +2990,11 @@ def get_subgraph_timeline(
         person_placeholders = ",".join("?" for _ in person_ids)
         person_rows = fetch_all(
             conn,
-            f"SELECT * FROM persons WHERE circle_id = ? AND id IN ({person_placeholders})",
+            f"""
+            SELECT id, full_name, birth_date, death_date, birth_place
+            FROM persons
+            WHERE circle_id = ? AND id IN ({person_placeholders})
+            """,
             (circle_id, *person_ids),
         )
         person_map = {row["id"]: row for row in person_rows}
@@ -2557,6 +3174,30 @@ def get_subgraph_migration_geojson(
     return {"type": "FeatureCollection", "features": features}
 
 
+@app.get("/circles/{circle_id}/threads", response_model=Optional[DiscussionThreadOut])
+def get_existing_thread(
+    circle_id: str,
+    entity_type: Literal["person", "relationship", "change_request"] = Query(...),
+    entity_id: str = Query(...),
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> Optional[DiscussionThreadOut]:
+    with get_conn() as conn:
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
+        _get_role(conn, circle_id, actor_user_id)
+        _require_discussion_entity_exists(conn, circle_id, entity_type, entity_id)
+        row = fetch_one(
+            conn,
+            """
+            SELECT id, circle_id, entity_type, entity_id, created_by, created_at
+            FROM discussion_threads
+            WHERE circle_id = ? AND entity_type = ? AND entity_id = ?
+            """,
+            (circle_id, entity_type, entity_id),
+        )
+    return DiscussionThreadOut(**dict(row)) if row else None
+
+
 @app.post("/circles/{circle_id}/threads", response_model=DiscussionThreadOut)
 async def create_or_get_thread(
     circle_id: str,
@@ -2569,6 +3210,7 @@ async def create_or_get_thread(
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
         _get_role(conn, circle_id, actor_user_id)
+        _require_discussion_entity_exists(conn, circle_id, payload.entity_type, payload.entity_id)
         existing = fetch_one(
             conn,
             """
@@ -2580,24 +3222,31 @@ async def create_or_get_thread(
         )
         if existing:
             return DiscussionThreadOut(**dict(existing))
-        execute(
+        insert_result = execute(
             conn,
             """
             INSERT INTO discussion_threads (id, circle_id, entity_type, entity_id, created_by, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (circle_id, entity_type, entity_id) DO NOTHING
             """,
             (thread_id, circle_id, payload.entity_type, payload.entity_id, actor_user_id, now),
         )
+        created_thread = insert_result.rowcount == 1
         row = fetch_one(
             conn,
-            "SELECT id, circle_id, entity_type, entity_id, created_by, created_at FROM discussion_threads WHERE id = ?",
-            (thread_id,),
+            """
+            SELECT id, circle_id, entity_type, entity_id, created_by, created_at
+            FROM discussion_threads
+            WHERE circle_id = ? AND entity_type = ? AND entity_id = ?
+            """,
+            (circle_id, payload.entity_type, payload.entity_id),
         )
     out = DiscussionThreadOut(**dict(row))
-    await ws_manager.broadcast(
-        circle_id,
-        {"type": "thread.created", "circle_id": circle_id, "thread": out.model_dump()},
-    )
+    if created_thread:
+        await ws_manager.broadcast(
+            circle_id,
+            {"type": "thread.created", "circle_id": circle_id, "thread": out.model_dump()},
+        )
     return out
 
 
@@ -2683,7 +3332,14 @@ def create_change_request(
     now = utc_now()
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        _get_role(conn, circle_id, actor_user_id)
+        role = _get_role(conn, circle_id, actor_user_id)
+        if not can_read_sensitive_person_fields(role) and contains_sensitive_person_fields(
+            payload.proposed_patch_json
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Only circle owners and editors can propose changes to sensitive person fields",
+            )
         if payload.entity_type == "person":
             row = fetch_one(
                 conn,
@@ -2710,7 +3366,7 @@ def create_change_request(
             ),
         )
         out = fetch_one(conn, "SELECT * FROM change_requests WHERE id = ?", (cr_id,))
-    return ChangeRequestOut(**dict(out))
+    return _change_request_out(out, role)
 
 
 @app.get("/circles/{circle_id}/change-requests", response_model=list[ChangeRequestOut])
@@ -2721,7 +3377,7 @@ def list_change_requests(
 ) -> list[ChangeRequestOut]:
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        _get_role(conn, circle_id, actor_user_id)
+        role = _get_role(conn, circle_id, actor_user_id)
         rows = fetch_all(
             conn,
             """
@@ -2731,7 +3387,7 @@ def list_change_requests(
             """,
             (circle_id,),
         )
-    return [ChangeRequestOut(**dict(row)) for row in rows]
+    return [_change_request_out(row, role) for row in rows]
 
 
 @app.post("/circles/{circle_id}/change-requests/{change_request_id}/approve", response_model=ChangeRequestOut)
@@ -2745,7 +3401,7 @@ def approve_change_request(
     reviewed_at = utc_now()
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        role = _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
         row = fetch_one(
             conn,
             "SELECT * FROM change_requests WHERE id = ? AND circle_id = ?",
@@ -2782,7 +3438,7 @@ def approve_change_request(
             (actor_user_id, payload.review_comment, reviewed_at, change_request_id),
         )
         out = fetch_one(conn, "SELECT * FROM change_requests WHERE id = ?", (change_request_id,))
-    return ChangeRequestOut(**dict(out))
+    return _change_request_out(out, role)
 
 
 @app.post("/circles/{circle_id}/change-requests/{change_request_id}/reject", response_model=ChangeRequestOut)
@@ -2796,7 +3452,7 @@ def reject_change_request(
     reviewed_at = utc_now()
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        role = _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
         row = fetch_one(
             conn,
             "SELECT * FROM change_requests WHERE id = ? AND circle_id = ?",
@@ -2816,4 +3472,4 @@ def reject_change_request(
             (actor_user_id, payload.review_comment, reviewed_at, change_request_id),
         )
         out = fetch_one(conn, "SELECT * FROM change_requests WHERE id = ?", (change_request_id,))
-    return ChangeRequestOut(**dict(out))
+    return _change_request_out(out, role)
