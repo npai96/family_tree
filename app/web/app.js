@@ -3374,6 +3374,10 @@ function App() {
                         : (activeUserName
                             ? "Sign in to load your circles, people, and collaboration tools."
                             : (managedAuthAvailable ? "Sign in with Google to create a private family circle. Add people, connect relatives, and return to your saved work on any device." : "Choose an existing user or create your first archive steward to begin.")))),
+                  managedAuthAvailable && authState !== "checking" && authState !== "unavailable"
+                    ? React.createElement("p", { className: "auth-gate-access", key: "access" },
+                        "Live access is currently limited to approved Google test accounts. If your account has not been added, contact the project owner to request access.")
+                    : null,
                   authState === "checking"
                     ? React.createElement("div", { className: "muted", key: "checking", role: "status" }, "Checking security mode…")
                     : (authState === "unavailable"

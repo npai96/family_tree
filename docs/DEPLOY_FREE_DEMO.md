@@ -29,7 +29,7 @@ Follow [Supabase's Google sign-in setup](https://supabase.com/docs/guides/auth/s
 1. Create a Google OAuth **Web application** client and configure the consent screen with only the basic identity scopes.
 2. Add `https://PROJECT.supabase.co/auth/v1/callback` to Google's authorized redirect URIs (use the callback shown in your Supabase dashboard).
 3. Enable Google in Supabase Authentication → Providers and enter the Google client ID and secret there.
-4. While Google's consent screen is in Testing, add your intended testers as Google test users. For unrestricted portfolio visitors, move the consent screen to the appropriate published state; follow any verification requirements Google presents.
+4. Keep Google's consent screen in **Testing** for this approved-tester demo and add each intended tester as a Google test user. The public portfolio walkthrough does not require app sign-in. If open sign-up is considered later, revisit Google publishing, abuse controls, and capacity before changing access.
 5. Once your Render hostname is known, set Supabase's Site URL to `https://YOUR-SERVICE.onrender.com` and add the exact allowed redirect URL `https://YOUR-SERVICE.onrender.com/auth/managed/callback`. Avoid wildcard redirects.
 
 The app starts a PKCE flow: a short-lived, HTTP-only cookie holds a random verifier; Supabase checks that verifier when the callback code is exchanged. The server then checks the returned identity with Supabase Auth. A stable Supabase user ID becomes the local account ID, so repeated logins and different devices reach the same circles.
@@ -57,7 +57,7 @@ The example environment file is `.env.hosted.example`. The application does not 
 - Sign out; a previously issued media ticket should no longer open the private file.
 - Note where testers hesitate: getting started, finding a person, understanding graph direction, editing a profile, and accepting an invitation. Use fictional information during usability sessions.
 
-Live Google sign-in, a real Supabase database/storage project, and Render deployment must be verified with your configured accounts. Local tests use a fake provider and a temporary SQLite database; they cannot certify provider dashboard settings or deployed cross-device behavior.
+On 2026-09-20, the project owner manually reported successful live Google sign-in for two accounts, a private sample circle, a profile edit visible on a phone, a JPEG/PNG upload stored in Supabase and reopened after a Render redeploy, account isolation, an accepted viewer invitation, and read-only viewer fields with medical-note redaction. This is manual user-reported acceptance; local tests use a fake provider and temporary SQLite database and do not independently certify provider configuration or all deployed permission paths.
 
 ## Free-tier limits and data lifetime
 
@@ -80,4 +80,4 @@ To return to local review testing, unset all Supabase variables, use a local SQL
 - Full local suite: **76 backend tests passed, 10 Postgres tests skipped; 16 frontend tests passed**.
 - Hosted-boundary tests use temporary SQLite plus a mocked provider: PKCE exchange/handoff, rejected callbacks, account isolation, review-session rejection, logout, remote-media behavior, safe secret-key headers, and saved edits across separate sessions for the same identity.
 - In-app browser with a disposable mocked-identity server: sign-in gate, account handoff, private sample creation, graph rendering, profile edit/save, reload, and reopening the saved edit all passed; no browser error logs in that flow.
-- Live Google/Supabase/Render, real Postgres/RLS execution, real remote media storage, and physical cross-device checks remain unverified. Local Docker was not running, so the opt-in Postgres suite could not run.
+- The owner reported live Google/Supabase/Render and cross-device checks above. Real Postgres/RLS execution has not been independently exercised by the opt-in Postgres suite because local Docker was not running.

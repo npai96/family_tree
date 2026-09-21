@@ -467,6 +467,10 @@ form button.person-panel-find {
   color: var(--muted);
   line-height: 1.55;
 }
+.auth-gate .auth-gate-access {
+  margin-top: -6px;
+  font-size: 14px;
+}
 .auth-gate-actions {
   display: flex;
   flex-wrap: wrap;
