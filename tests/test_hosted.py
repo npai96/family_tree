@@ -113,7 +113,11 @@ def test_private_media_survives_local_file_loss_and_tickets_respect_logout(clien
     url = f'/circles/{circle}/media/{upload.json()["id"]}/download'
     assert client.get(url, headers=session()).status_code == 403
     ticket = client.post(f'/circles/{circle}/access-tickets', headers=owner, json={'scope': 'media'}).json()['ticket']
-    assert client.get(url, params={'ticket': ticket}).content == b'\xff\xd8\xffFamily portrait'
+    preview = client.get(url, params={'ticket': ticket})
+    assert preview.content == b'\xff\xd8\xffFamily portrait'
+    assert preview.headers['content-type'] == 'image/jpeg'
+    assert preview.headers['content-disposition'].startswith('inline;')
+    assert preview.headers['referrer-policy'] == 'no-referrer'
     assert client.post('/auth/logout', headers=owner).status_code == 204
     assert client.get(url, params={'ticket': ticket}).status_code == 401
 

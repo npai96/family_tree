@@ -3001,6 +3001,7 @@ def test_media_ticket_enforces_scope_expiry_and_parent_session_revocation(tmp_pa
     )
     assert downloaded.status_code == 200
     assert downloaded.content == JPEG_BYTES + b"-portrait"
+    assert downloaded.headers["content-disposition"].startswith("inline;")
     assert downloaded.headers["cache-control"] == "private, max-age=300"
     assert downloaded.headers["referrer-policy"] == "no-referrer"
     assert downloaded.headers["x-content-type-options"] == "nosniff"

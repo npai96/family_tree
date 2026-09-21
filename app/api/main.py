@@ -2387,9 +2387,11 @@ def download_media(
 
     if hosted.ENABLED:
         content = hosted.read_object(f"{circle_id}/{row['person_id']}/{row['stored_filename']}")
+        disposition = "inline" if row["mime_type"] in SAFE_MEDIA_PREVIEW_TYPES else "attachment"
         return Response(content, media_type=row["mime_type"] or "application/octet-stream",
                         headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
-                                 "Content-Disposition": "attachment; filename*=utf-8''" + quote(_safe_media_filename(row["original_filename"], row["mime_type"] or "application/octet-stream"))})
+                                 "Referrer-Policy": "no-referrer",
+                                 "Content-Disposition": disposition + "; filename*=utf-8''" + quote(_safe_media_filename(row["original_filename"], row["mime_type"] or "application/octet-stream"))})
     file_path = _media_file_path(circle_id, row["person_id"], row["stored_filename"])
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="Media file missing on disk")
@@ -2397,6 +2399,7 @@ def download_media(
         file_path,
         media_type=row["mime_type"] or "application/octet-stream",
         filename=_safe_media_filename(row["original_filename"], row["mime_type"] or "application/octet-stream"),
+        content_disposition_type="inline" if row["mime_type"] in SAFE_MEDIA_PREVIEW_TYPES else "attachment",
         headers={
             "Cache-Control": "private, max-age=300",
             "Referrer-Policy": "no-referrer",
