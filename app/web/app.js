@@ -3723,8 +3723,10 @@ function App() {
           }, () => [
             React.createElement("form", { key: "f", onSubmit: (e) => uploadMedia(e).catch((x) => setStatus(x.message)) }, [
               React.createElement(PersonPanelSubject, { key: "p", personId: selectedPersonId, personName: selectedPerson?.full_name, onFind: focusPersonFinder }),
-              React.createElement("input", { key: "i", type: "file", name: "file", accept: MEDIA_ACCEPT, disabled: mediaUploadBusy }),
-              React.createElement("div", { className: "muted", key: "policy" }, "JPEG, PNG, WebP, GIF, HEIC, TIFF, PDF, text, MP3, WAV, M4A, MP4, or MOV. Server limit: 25 MiB by default."),
+              React.createElement("input", { key: "i", type: "file", name: "file", accept: managedAuthAvailable ? ".jpg,.jpeg,.png" : MEDIA_ACCEPT, disabled: mediaUploadBusy }),
+              React.createElement("div", { className: "muted", key: "policy" }, managedAuthAvailable
+                ? "JPEG or PNG images only. Limit: 5 MiB for this hosted demo."
+                : "JPEG, PNG, WebP, GIF, HEIC, TIFF, PDF, text, MP3, WAV, M4A, MP4, or MOV. Server limit: 25 MiB by default."),
               React.createElement("button", { key: "b", type: "submit", disabled: !selectedPersonId || !canEditRecords || mediaUploadBusy }, mediaUploadBusy ? "Uploading…" : "Upload"),
             ]),
             React.createElement("div", { className: "list", key: "l" },

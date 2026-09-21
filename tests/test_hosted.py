@@ -103,14 +103,17 @@ def test_private_media_survives_local_file_loss_and_tickets_respect_logout(clien
     owner = session()
     circle = client.post('/circles', headers=owner, json={'name': 'Archive'}).json()['id']
     person = client.post(f'/circles/{circle}/persons', headers=owner, json={'full_name': 'Asha'}).json()['id']
+    rejected = client.post(f'/circles/{circle}/persons/{person}/media', headers=owner,
+                           files={'file': ('note.txt', b'Family story', 'text/plain')})
+    assert rejected.status_code == 415
     upload = client.post(f'/circles/{circle}/persons/{person}/media', headers=owner,
-                         files={'file': ('note.txt', b'Family story', 'text/plain')})
+                         files={'file': ('portrait.jpg', b'\xff\xd8\xffFamily portrait', 'image/jpeg')})
     assert upload.status_code == 200
-    assert not list(main.MEDIA_DIR.rglob('*.txt'))
+    assert not list(main.MEDIA_DIR.rglob('*.jpg'))
     url = f'/circles/{circle}/media/{upload.json()["id"]}/download'
     assert client.get(url, headers=session()).status_code == 403
     ticket = client.post(f'/circles/{circle}/access-tickets', headers=owner, json={'scope': 'media'}).json()['ticket']
-    assert client.get(url, params={'ticket': ticket}).content == b'Family story'
+    assert client.get(url, params={'ticket': ticket}).content == b'\xff\xd8\xffFamily portrait'
     assert client.post('/auth/logout', headers=owner).status_code == 204
     assert client.get(url, params={'ticket': ticket}).status_code == 401
 

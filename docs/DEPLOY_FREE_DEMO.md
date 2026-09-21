@@ -19,7 +19,7 @@ Identity and permission are separate: Google/Supabase identify the account; the 
 2. In Connect, copy the **session pooler** Postgres URL (IPv4 compatible, port 5432). Set a URL-encoded database password and append `?sslmode=require`. Set this as Render's `DATABASE_URL`. The runtime schema in `db/runtime_postgres.sql` is created at startup; `db/schema.sql` is a different future architecture and must not be applied here.
 3. Copy the project URL and publishable key into `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY`.
 4. Create a new server-only `sb_secret_...` key under Settings → API Keys and put it in Render as `SUPABASE_SECRET_KEY`. The backend sends it in the `apikey` header for private Storage operations. Do not use or share the legacy `service_role` key. Keep the new secret only in Render's environment settings, never in the browser, Git, screenshots, or chat.
-5. Create a **private** Storage bucket named `family-media`. Set its upload size limit to **5 MiB**. Do not enable public access or add public read/write policies. The API uses its server key after checking circle membership.
+5. Create a **private** Storage bucket named `family-media`. Set its upload size limit to **5 MiB** and restrict MIME types to `image/jpeg,image/png`. Do not enable public access or add public read/write policies. The hosted API accepts only JPEG and PNG images after checking circle membership.
 6. Disable unused authentication providers if desired. This UI uses Google; it does not offer email/password registration or depend on SMTP delivery.
 
 ## 2. Google sign-in
@@ -52,7 +52,7 @@ The example environment file is `.env.hosted.example`. The application does not 
 - Person A signs in with Google and clicks **Explore a sample family**. This creates five fictional people and six relationships in their own circle; clicking again reopens the same circle.
 - Find **Meera Rao**, choose descendants and depth 3, then render. Open a profile, edit an occupation/story, and save it. Try adding a person and a parent relationship.
 - Refresh; confirm the edit remains. Sign in to the same Google account on another device; confirm the same circle and edit.
-- Upload a small image or text story. Redeploy the Render service and verify the media still opens. This specifically checks that storage is remote, not on the disposable Render filesystem.
+- Upload a small JPEG or PNG image. Redeploy the Render service and verify the media still opens. This specifically checks that storage is remote, not on the disposable Render filesystem.
 - Person B signs in using a different Google account. They should see none of A's circles. B shares **Your invitation code**; A pastes it into **Invitations & Ownership**, chooses viewer, and sends the invitation. B accepts. B can view but cannot edit. Test editor separately if collaboration is in scope.
 - Sign out; a previously issued media ticket should no longer open the private file.
 - Note where testers hesitate: getting started, finding a person, understanding graph direction, editing a profile, and accepting an invitation. Use fictional information during usability sessions.

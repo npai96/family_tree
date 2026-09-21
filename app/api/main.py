@@ -2243,6 +2243,8 @@ async def upload_person_media(
                 status_code=415,
                 detail="Unsupported or mismatched media format. Use JPEG, PNG, WebP, GIF, HEIC, TIFF, PDF, UTF-8 text, MP3, WAV, M4A, MP4, or MOV.",
             )
+        if hosted.ENABLED and media_type not in {"image/jpeg", "image/png"}:
+            raise HTTPException(status_code=415, detail="This hosted demo accepts JPEG or PNG images only")
 
         original_name = _safe_media_filename(file.filename, media_type)
         stored_name = f"{asset_id}{MEDIA_EXTENSION_BY_TYPE[media_type]}"
