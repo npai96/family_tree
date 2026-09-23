@@ -671,6 +671,7 @@ function GraphView({
   mediaPreviewByPersonId,
   zoom,
   selectedNodeId,
+  newArrivalId,
   highlightedNodeIds,
   highlightedEdgeKeys,
   onNodeClick,
@@ -1316,6 +1317,7 @@ function GraphView({
       const nodeId = this.getAttribute("data-node-id");
       const selected = nodeId === selectedNodeId;
       d3.select(this)
+        .classed("new-arrival", nodeId === newArrivalId)
         .attr("tabindex", selected || (!selectedNodeId && nodeId === rootPersonId) ? 0 : -1)
         .attr("aria-pressed", selected ? "true" : "false")
         .attr("aria-label", describeGraphNode(node, connectionCountByNode[nodeId], selected));
@@ -1324,7 +1326,7 @@ function GraphView({
       const nodeId = this.getAttribute("data-node-id");
       d3.select(this).style("filter", nodeId === selectedNodeId || nodeId === rootPersonId ? "none" : "grayscale(0.95)");
     });
-  }, [connectionCountByNode, hasData, highlightedEdgeKeys, highlightedNodeIds, rootPersonId, selectedNodeId]);
+  }, [connectionCountByNode, hasData, highlightedEdgeKeys, highlightedNodeIds, newArrivalId, rootPersonId, selectedNodeId]);
 
   useEffect(() => {
     if (!hasData || !svgRef.current || !zoomBehaviorRef.current || typeof d3 === "undefined") return;
@@ -1392,6 +1394,179 @@ function PersonPanelSubject({ personId, personName, onFind }) {
   ]);
 }
 
+const PERSON_JOURNEY_STEPS = [
+  { name: "Meet them", title: "Who are we remembering?", prompt: "Start with the name they use. You can add or change the rest later." },
+  { name: "Their world", title: "What fills their days?", prompt: "A job is one part of a life. What do they enjoy, and what are they like to be around?" },
+  { name: "Their story", title: "What would you want someone to know?", prompt: "A small memory is enough to begin. You can return to this story together." },
+  { name: "Their place", title: "Where do they fit in the family?", prompt: "Connect them to one relative now, or leave this for later." },
+];
+
+function PersonJourney({ people, onClose, onReveal, onCheckDuplicates, onSave, onRetryLink }) {
+  const h = React.createElement;
+  const [step, setStep] = useState(0);
+  const [draft, setDraft] = useState({
+    full_name: "", birth_date: "", birth_place: "", occupation: "", hobbies: "",
+    personality: "", bio_text: "", relative_id: "", relationship_type: "child_of",
+  });
+  const [hints, setHints] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(null);
+  const dialogRef = useRef(null);
+  const firstFieldRef = useRef(null);
+  const stepHeadingRef = useRef(null);
+  const completionHeadingRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  const busyRef = useRef(busy);
+  onCloseRef.current = onClose;
+  busyRef.current = busy;
+  const update = (field) => (event) => {
+    const value = event.target.value;
+    setDraft((current) => ({ ...current, [field]: value }));
+    if (["full_name", "birth_date", "birth_place"].includes(field)) setHints([]);
+    setError("");
+  };
+
+  useEffect(() => {
+    const priorFocus = document.activeElement;
+    const priorOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    firstFieldRef.current?.focus();
+    function onKeyDown(event) {
+      if (event.key === "Escape" && !busyRef.current) onCloseRef.current();
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const focusable = Array.from(dialogRef.current.querySelectorAll("button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])"));
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = priorOverflow;
+      document.removeEventListener("keydown", onKeyDown);
+      priorFocus?.focus?.();
+    };
+  }, []);
+  useEffect(() => {
+    if (saved) completionHeadingRef.current?.focus();
+    else if (step > 0) stepHeadingRef.current?.focus();
+  }, [step, saved]);
+
+  async function next() {
+    setError("");
+    if (step === 0) {
+      if (!draft.full_name.trim()) { setError("Please add their name to continue."); return; }
+      setBusy(true);
+      try {
+        const matches = await onCheckDuplicates(draft);
+        setHints(matches);
+        if (matches.some((match) => match.reasons.includes("exact_name_match") && match.reasons.includes("birth_date_match"))) {
+          setError("This person may already be in the circle. Open their profile instead of adding a duplicate.");
+          return;
+        }
+      } catch (cause) { setError(cause.message); return; }
+      finally { setBusy(false); }
+    }
+    setStep((current) => Math.min(current + 1, PERSON_JOURNEY_STEPS.length - 1));
+  }
+
+  async function save() {
+    setBusy(true); setError("");
+    try { setSaved(await onSave(draft)); }
+    catch (cause) { setError(cause.message); }
+    finally { setBusy(false); }
+  }
+
+  async function retryLink() {
+    if (!saved?.person?.id) return;
+    setBusy(true); setError("");
+    try { setSaved(await onRetryLink(saved.person, draft)); }
+    catch (cause) { setError(cause.message); }
+    finally { setBusy(false); }
+  }
+
+  const field = (key, label, placeholder, extra = {}) => h("label", { className: "journey-field", key }, [
+    h("span", { key: "label" }, label),
+    h("input", { key: "input", value: draft[key], onChange: update(key), onInput: update(key), placeholder, ...extra }),
+  ]);
+  const stepContent = [
+    h("div", { className: "journey-fields", key: "meet" }, [
+      field("full_name", "Their name *", "What name do they go by?", { ref: firstFieldRef, maxLength: 200, autoComplete: "off" }),
+      field("birth_date", "When were they born?", "", { type: "date" }),
+      field("birth_place", "Where did their story begin?", "City, town, or village"),
+      hints.length ? h("div", { className: "journey-hints", key: "hints" }, [
+        h("strong", { key: "title" }, "Similar people already in this circle"),
+        ...hints.slice(0, 3).map((match) => h("p", { key: match.person_id }, `${match.full_name}${match.birth_date ? ` · ${match.birth_date}` : ""}`)),
+      ]) : null,
+    ]),
+    h("div", { className: "journey-fields", key: "world" }, [
+      field("occupation", "What work or calling matters to them?", "A job, craft, or role"),
+      field("hobbies", "What do they love doing?", "Music, cooking, cricket, long walks…"),
+      field("personality", "How would you describe them to a friend?", "The little things that make them themselves"),
+    ]),
+    h("label", { className: "journey-field", key: "story" }, [
+      h("span", { key: "label" }, "A memory, in your own words"),
+      h("textarea", { key: "input", value: draft.bio_text, onChange: update("bio_text"), rows: 7, placeholder: "I remember when…" }),
+      h("small", { key: "hint" }, "This story is shared with members of this circle. You can edit it later."),
+    ]),
+    h("div", { className: "journey-fields", key: "family" }, [
+      h("label", { className: "journey-field", key: "relative" }, [
+        h("span", { key: "label" }, "Connect them to"),
+        h("select", { key: "input", value: draft.relative_id, onChange: update("relative_id") }, [
+          h("option", { key: "none", value: "" }, "I'll connect them later"),
+          ...people.map((person) => h("option", { key: person.id, value: person.id }, person.full_name)),
+        ]),
+      ]),
+      draft.relative_id ? h("label", { className: "journey-field", key: "relationship" }, [
+        h("span", { key: "label" }, `How is ${draft.full_name.trim() || "this person"} related to them?`),
+        h("select", { key: "input", value: draft.relationship_type, onChange: update("relationship_type") }, [
+          h("option", { key: "child", value: "child_of" }, "Their child"),
+          h("option", { key: "parent", value: "parent_of" }, "Their parent"),
+          h("option", { key: "spouse", value: "spouse_of" }, "Their spouse"),
+          h("option", { key: "sibling", value: "sibling_of" }, "Their sibling"),
+        ]),
+      ]) : null,
+      h("div", { className: "journey-review", key: "review" }, [
+        h("strong", { key: "name" }, draft.full_name.trim()),
+        h("span", { key: "details" }, [draft.birth_place, draft.occupation, draft.hobbies].filter(Boolean).join(" · ") || "A new story begins here"),
+      ]),
+    ]),
+  ];
+  return h("div", { className: "journey-backdrop", onMouseDown: (event) => { if (event.target === event.currentTarget && !busy) onClose(); } },
+    h("section", { className: "person-journey", role: "dialog", "aria-modal": "true", "aria-labelledby": "journey-title", ref: dialogRef }, [
+      h("div", { className: "journey-head", key: "head" }, [
+        h("span", { className: "journey-eyebrow", key: "eyebrow" }, "Viraasat · A new story"),
+        h("button", { className: "journey-close", key: "close", type: "button", onClick: onClose, disabled: busy, "aria-label": saved ? "Close" : "Close without saving" }, "×"),
+      ]),
+      saved ? h("div", { className: "journey-complete", key: "complete" }, [
+        h("div", { className: "journey-complete-mark", key: "mark", "aria-hidden": "true" }, "✦"),
+        h("h2", { id: "journey-title", key: "title", ref: completionHeadingRef, tabIndex: -1 }, `${saved.person.full_name} is part of the story.`),
+        h("p", { key: "description" }, saved.linkError
+          ? "Their profile was saved. The family connection needs another try; you can retry it here or link them later."
+          : saved.graphError ? "Their profile was saved. Refresh the tree to see their new place." : "Their profile is saved. The tree will bring their new place into view."),
+        saved.linkError ? h("p", { className: "journey-error", key: "link-error", role: "alert" }, saved.linkError) : null,
+        saved.linkError ? h("button", { className: "journey-primary", key: "retry", type: "button", onClick: retryLink, disabled: busy }, busy ? "Trying again…" : "Retry family connection") : null,
+        h("button", { className: "journey-secondary", key: "done", type: "button", onClick: () => onReveal(saved.person.id), disabled: busy }, saved.graphError ? "Close" : saved.linkError ? "View saved profile" : "See their place in the tree"),
+      ]) : h("div", { className: "journey-body", key: "body" }, [
+        h("ol", { className: "journey-steps", key: "steps", "aria-label": "Add family member progress" },
+          PERSON_JOURNEY_STEPS.map((item, index) => h("li", { key: item.name, className: index === step ? "current" : index < step ? "done" : "" }, `${index + 1}. ${item.name}`))),
+        h("div", { className: "journey-stage", key: step }, [
+          h("h2", { id: "journey-title", key: "title", ref: stepHeadingRef, tabIndex: -1 }, PERSON_JOURNEY_STEPS[step].title),
+          h("p", { className: "journey-prompt", key: "prompt" }, PERSON_JOURNEY_STEPS[step].prompt),
+          stepContent[step],
+        ]),
+        error ? h("p", { className: "journey-error", role: "alert", key: "error" }, error) : null,
+        h("div", { className: "journey-actions", key: "actions" }, [
+          step ? h("button", { className: "journey-secondary", key: "back", type: "button", onClick: () => { setError(""); setStep(step - 1); }, disabled: busy }, "Back") : h("span", { key: "space" }),
+          h("button", { className: "journey-primary", key: "forward", type: "button", onClick: step === PERSON_JOURNEY_STEPS.length - 1 ? save : next, disabled: busy }, busy ? "One moment…" : step === PERSON_JOURNEY_STEPS.length - 1 ? "Add to our family" : "Continue"),
+        ]),
+      ]),
+    ])
+  );
+}
+
 function App() {
   const [users, setUsers] = useState([]);
   const [activeUserId, setActiveUserId] = useState(localStorage.getItem("activeUserId") || "");
@@ -1427,7 +1602,9 @@ function App() {
   const [discussionThreadId, setDiscussionThreadId] = useState("");
   const [discussionMessages, setDiscussionMessages] = useState([]);
   const [personRevisions, setPersonRevisions] = useState([]);
-  const [duplicateHints, setDuplicateHints] = useState([]);
+  const [personJourneyOpen, setPersonJourneyOpen] = useState(false);
+  const [newArrivalId, setNewArrivalId] = useState("");
+  const [inviteCopied, setInviteCopied] = useState(false);
   const [subgraph, setSubgraph] = useState(null);
   const [lastRoot, setLastRoot] = useState("");
   const [lastDirection, setLastDirection] = useState("descendants");
@@ -1681,6 +1858,12 @@ function App() {
   async function signOutCurrentUser() {
     const revocationConfirmed = await revokeTokenRemotely(authToken);
     setToken("");
+    setPersonJourneyOpen(false);
+    setInviteCopied(false);
+    if (managedAuthAvailable) {
+      setActiveUser("");
+      setUsers([]);
+    }
     setStatus(revocationConfirmed
       ? "Signed out"
       : "Signed out locally. Server revocation could not be confirmed.");
@@ -1708,6 +1891,8 @@ function App() {
   function selectCircle(circleId) {
     const nextCircleId = circleId || "";
     if (selectedCircleRef.current !== nextCircleId) {
+      setPersonJourneyOpen(false);
+      setNewArrivalId("");
       selectedPersonIdRef.current = "";
       setSelectedPersonId("");
       clearSelectedPersonPanelData("");
@@ -2382,48 +2567,79 @@ function App() {
     await loadManagementData(selectedCircle);
   }
 
-  async function addPerson(e) {
-    e.preventDefault();
-    const full_name = e.target.full_name.value.trim();
-    const birth_date = e.target.birth_date.value || null;
-    const birth_place = e.target.birth_place.value.trim() || null;
-    const hints = await requestJson(
-      `/circles/${selectedCircle}/persons/duplicate-hints?full_name=${encodeURIComponent(full_name)}${birth_date ? `&birth_date=${encodeURIComponent(birth_date)}` : ""}${birth_place ? `&birth_place=${encodeURIComponent(birth_place)}` : ""}`,
-      { headers }
-    );
-    setDuplicateHints(hints);
-    await requestJson(`/circles/${selectedCircle}/persons`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        full_name,
-        religion: e.target.religion.value.trim() || null,
-        birth_date,
-        birth_place,
-      }),
-    });
-    setStatus("Person created");
-    e.target.reset();
-    setDuplicateHints([]);
-    await loadCircleData(selectedCircle);
+  async function checkJourneyDuplicates(draft) {
+    const query = new URLSearchParams({ full_name: draft.full_name.trim() });
+    if (draft.birth_date) query.set("birth_date", draft.birth_date);
+    if (draft.birth_place.trim()) query.set("birth_place", draft.birth_place.trim());
+    return requestJson(`/circles/${selectedCircle}/persons/duplicate-hints?${query}`, { headers });
   }
 
-  async function checkPersonDuplicates(e) {
-    const form = e.currentTarget.form;
-    if (!form) return;
-    const full_name = form.full_name.value.trim();
-    const birth_date = form.birth_date.value || null;
-    const birth_place = form.birth_place.value.trim() || null;
-    if (!full_name) {
-      setStatus("Enter a full name before checking duplicates");
-      return;
+  async function finishPersonJourney(person, draft) {
+    let linkError = "";
+    if (draft.relative_id) {
+      try {
+        await requestJson(`/circles/${selectedCircle}/relationships`, {
+          method: "POST", headers,
+          body: JSON.stringify({ from_person_id: person.id, to_person_id: draft.relative_id, relationship_type: draft.relationship_type }),
+        });
+      } catch (cause) { linkError = cause.message; }
     }
-    const hints = await requestJson(
-      `/circles/${selectedCircle}/persons/duplicate-hints?full_name=${encodeURIComponent(full_name)}${birth_date ? `&birth_date=${encodeURIComponent(birth_date)}` : ""}${birth_place ? `&birth_place=${encodeURIComponent(birth_place)}` : ""}`,
-      { headers }
+    const linked = draft.relative_id && !linkError;
+    const root = linked && draft.relationship_type !== "parent_of" ? draft.relative_id : person.id;
+    const mode = linked && ["spouse_of", "sibling_of"].includes(draft.relationship_type) ? "family_expanded" : "lineage";
+    setLastRoot(root);
+    setGraphRootPersonId(root);
+    setLastDirection("descendants");
+    setLastDepth(2);
+    setLastMode(mode);
+    setLastLayoutMode("hierarchy");
+    setLastLateralTypes("spouse_of,sibling_of,cousin_of");
+    setLastLateralDepth(1);
+    selectPerson(person.id);
+    setHighlightedNodeIds([person.id]);
+    setHighlightedEdgeKeys([]);
+    setRightOpen(true);
+    const results = await Promise.allSettled([
+      loadCircleData(selectedCircle),
+      fetchSubgraph({ circleId: selectedCircle, root, direction: "descendants", depth: 2, mode, lateralTypes: "spouse_of,sibling_of,cousin_of", lateralDepth: 1 }),
+    ]);
+    const graphResult = results[1];
+    if (graphResult.status === "fulfilled" && graphResult.value) setSubgraph(graphResult.value);
+    const refreshError = results.find((result) => result.status === "rejected");
+    setStatus(linkError ? `Profile saved; family link needs attention: ${linkError}` :
+      refreshError ? `Profile saved; refresh needed: ${refreshError.reason.message}` : `${person.full_name} added to the family`);
+    return { person, linkError, graphError: refreshError?.reason?.message || "" };
+  }
+
+  async function savePersonJourney(draft) {
+    const profile = Object.fromEntries(
+      ["full_name", "birth_date", "birth_place", "occupation", "hobbies", "personality", "bio_text"]
+        .map((field) => [field, draft[field].trim() || null])
     );
-    setDuplicateHints(hints);
-    setStatus(hints.length ? `Found ${hints.length} potential duplicate(s)` : "No likely duplicates found");
+    profile.full_name = draft.full_name.trim();
+    const person = await requestJson(`/circles/${selectedCircle}/persons`, {
+      method: "POST", headers, body: JSON.stringify(profile),
+    });
+    return finishPersonJourney(person, draft);
+  }
+
+  async function copyInvitationCode() {
+    try {
+      await navigator.clipboard.writeText(activeUserId);
+      setInviteCopied(true);
+      window.setTimeout(() => setInviteCopied(false), 2600);
+    } catch (_) { setStatus("Copy failed. Select the invitation code and copy it manually."); }
+  }
+
+  function revealNewPerson(personId) {
+    setPersonJourneyOpen(false);
+    setNewArrivalId(personId);
+    window.requestAnimationFrame(() => {
+      const node = Array.from(document.querySelectorAll(".graph-node"))
+        .find((element) => element.getAttribute("data-node-id") === personId);
+      node?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center", inline: "center" });
+    });
+    window.setTimeout(() => setNewArrivalId((current) => current === personId ? "" : current), 3800);
   }
 
   async function addRelationship(e) {
@@ -3128,7 +3344,7 @@ function App() {
               }, "Sign Out"),
             ]),
             managedAuthAvailable && isAuthenticated ? React.createElement("button", {
-              key: "sample", type: "button", onClick: () => openSampleCircle().catch((x) => setStatus(x.message)),
+              key: "sample", type: "button", className: "sample-family-button", onClick: () => openSampleCircle().catch((x) => setStatus(x.message)),
             }, "Explore a sample family") : null,
             React.createElement("form", { key: "f2", onSubmit: (e) => createCircle(e).catch((x) => setStatus(x.message)) }, [
               React.createElement("input", { key: "i2", name: "name", required: true, placeholder: "New circle name" }),
@@ -3144,15 +3360,25 @@ function App() {
               : (circleSupplementalLoading
                   ? React.createElement("div", { className: "muted", key: "circle-loading", role: "status" }, "Core family loaded · refreshing collaboration details…")
                   : null),
-            React.createElement("div", { className: "muted", key: "ctx" }, activeUserName ? `Active: ${activeUserName}` : "No active user"),
+            React.createElement("div", { className: "muted", key: "ctx" }, activeUserName ? `${isAuthenticated ? "Active" : "Selected for sign-in"}: ${activeUserName}` : "No active user"),
             React.createElement("div", { className: "muted", key: "ctx-role" }, selectedCircle ? `Role: ${activeCircleRole || "none"}` : "Role: n/a"),
             React.createElement("div", { className: "muted", key: "ctx2" }, authState === "checking" ? "Auth: checking security mode" : (authState === "unavailable" ? "Auth: locked" : (isAuthenticated ? "Auth: signed in" : "Auth: signed out"))),
             managedAuthAvailable && isAuthenticated ? React.createElement("div", { key: "account-code" }, [
               React.createElement("label", { key: "label", htmlFor: "account-code" }, "Your invitation code"),
-              React.createElement("input", { key: "code", id: "account-code", readOnly: true, value: activeUserId, onFocus: (e) => e.target.select() }),
-              React.createElement("p", { className: "muted", key: "help" }, "Share this code with a circle owner to receive an invitation. Your changes are saved to your account."),
+              React.createElement("div", { className: "invitation-code-row", key: "row" }, [
+                React.createElement("input", { key: "code", id: "account-code", readOnly: true, value: activeUserId, onFocus: (e) => e.target.select() }),
+                React.createElement("button", { key: "copy", type: "button", onClick: copyInvitationCode, "aria-label": "Copy your invitation code" }, inviteCopied ? "Copied" : "Copy"),
+              ]),
+              React.createElement("p", { className: "muted", key: "help" }, "Copy and send this code to a circle owner. They send you an invitation; you accept it under Invitations & Ownership. Your changes are saved to your account."),
+              React.createElement("span", { className: "sr-only", role: "status", key: "copied" }, inviteCopied ? "Invitation code copied" : ""),
             ]) : null,
           ]),
+          selectedCircle && canEditRecords ? React.createElement("div", { className: "journey-entry", key: "journey-entry" }, [
+            React.createElement("span", { className: "journey-entry-kicker", key: "kicker" }, "Family archive"),
+            React.createElement("strong", { key: "title" }, "Someone to remember?"),
+            React.createElement("p", { key: "copy" }, "Begin with a name, then add the details that make them themselves."),
+            React.createElement("button", { key: "open", type: "button", onClick: () => setPersonJourneyOpen(true) }, "Add a family member"),
+          ]) : null,
           React.createElement(LazyDetails, { className: "card", key: "m", summary: "Membership" }, () => [
             React.createElement("form", { key: "f", onSubmit: (e) => addMember(e).catch((x) => setStatus(x.message)) }, [
               managedAuthAvailable ? React.createElement("input", { key: "s1", name: "user_id", required: true, placeholder: "Member invitation code", "aria-label": "Member invitation code" }) : React.createElement("select", { key: "s1", name: "user_id" },
@@ -3212,26 +3438,7 @@ function App() {
             ),
           ]),
           React.createElement(LazyDetails, { className: "card", key: "p", summary: "People & Relationships" }, () => [
-            React.createElement("form", { key: "f1", onSubmit: (e) => addPerson(e).catch((x) => setStatus(x.message)) }, [
-              React.createElement("input", { key: "n", name: "full_name", required: true, placeholder: "Full name" }),
-              React.createElement("input", { key: "r", name: "religion", placeholder: "Religion" }),
-              React.createElement("input", { key: "bd", name: "birth_date", type: "date" }),
-              React.createElement("input", { key: "bp", name: "birth_place", placeholder: "Birth place" }),
-              React.createElement("button", { key: "chk", type: "button", className: "ghost", onClick: (e) => checkPersonDuplicates(e).catch((x) => setStatus(x.message)), disabled: !selectedCircle || !canEditRecords }, "Check Duplicates"),
-              React.createElement("button", { key: "b", type: "submit", disabled: !selectedCircle || !canEditRecords }, "Add Person"),
-            ]),
-            duplicateHints.length
-              ? React.createElement(
-                  "div",
-                  { className: "list", key: "dups" },
-                  duplicateHints.map((h) =>
-                    React.createElement("div", { className: "item", key: h.person_id }, [
-                      React.createElement("div", { key: "n" }, `${h.full_name} (score ${h.score})`),
-                      React.createElement("div", { className: "muted", key: "m" }, `${h.birth_date || "?"} • ${h.birth_place || "?"} • ${h.reasons.join(", ")}`),
-                    ])
-                  )
-                )
-              : null,
+            React.createElement("button", { key: "add", type: "button", className: "people-journey-button", onClick: () => setPersonJourneyOpen(true), disabled: !selectedCircle || !canEditRecords }, "Add a family member"),
             React.createElement("form", { key: "f2", onSubmit: (e) => addRelationship(e).catch((x) => setStatus(x.message)) }, [
               React.createElement("select", { key: "a", name: "from_person_id" }, personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))),
               React.createElement("select", { key: "b", name: "to_person_id" }, personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))),
@@ -3366,14 +3573,12 @@ function App() {
                     ? "Checking this deployment"
                     : (authState === "unavailable"
                         ? "Authentication is locked for this deployment"
-                        : (activeUserName ? `Welcome back, ${activeUserName}` : "Continue your family archive"))),
+                        : "Continue your family archive")),
                   React.createElement("p", { key: "p" }, authState === "checking"
                     ? "Loading the server security mode before requesting any private family data."
                     : (authState === "unavailable"
                         ? (runtimeConfig?.warning || "Access remains closed until authentication is configured.")
-                        : (activeUserName
-                            ? "Sign in to load your circles, people, and collaboration tools."
-                            : (managedAuthAvailable ? "Sign in with Google to create a private family circle. Add people, connect relatives, and return to your saved work on any device." : "Choose an existing user or create your first archive steward to begin.")))),
+                        : (managedAuthAvailable ? "Sign in with Google to create a private family circle. Add people, connect relatives, and return to your saved work on any device." : "Choose an existing user or create your first archive steward to begin."))),
                   managedAuthAvailable && authState !== "checking" && authState !== "unavailable"
                     ? React.createElement("p", { className: "auth-gate-access", key: "access" },
                         "Live access is currently limited to approved Google test accounts. If your account has not been added, contact the project owner to request access.")
@@ -3553,6 +3758,7 @@ function App() {
                     mediaPreviewByPersonId,
                     zoom,
                     selectedNodeId: selectedPersonId,
+                    newArrivalId,
                     highlightedNodeIds: highlightedNodeSet,
                     highlightedEdgeKeys: highlightedEdgeSet,
                     onNodeClick: applyPersonFocus,
@@ -3608,6 +3814,7 @@ function App() {
                   mediaPreviewByPersonId,
                   zoom,
                   selectedNodeId: selectedPersonId,
+                  newArrivalId,
                   highlightedNodeIds: highlightedNodeSet,
                   highlightedEdgeKeys: highlightedEdgeSet,
                   onNodeClick: applyPersonFocus,
@@ -3991,7 +4198,10 @@ function App() {
           ]),
         ]) : null
       ]),
-    ])
+    ]),
+      personJourneyOpen && isAuthenticated && selectedCircle && canEditRecords
+        ? React.createElement(PersonJourney, { key: "person-journey", people: persons, onClose: () => setPersonJourneyOpen(false), onReveal: revealNewPerson, onCheckDuplicates: checkJourneyDuplicates, onSave: savePersonJourney, onRetryLink: finishPersonJourney })
+        : null,
   ]);
 }
 
