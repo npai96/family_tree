@@ -1024,7 +1024,7 @@ function GraphView({
         const line1 = words.slice(0, 2).join(" ");
         const line2 = words.slice(2, 4).join(" ");
         const years = `${node.birth_date || "?"} — ${node.death_date || "present"}`;
-        const badge = (node.occupation || node.religion || "ancestor").slice(0, 20);
+        const badge = node.occupation || node.religion || "ancestor";
         const g = nodeLayer
           .append("g")
           .attr("class", "graph-node")
@@ -1164,23 +1164,40 @@ function GraphView({
             .attr("fill", "#728091")
             .text(blurb);
         }
-        const badgeW = Math.max(48, Math.min(96, badge.length * 6 + 16));
+        const badgeLines = [];
+        let remainingBadge = badge.trim();
+        while (remainingBadge && badgeLines.length < 2) {
+          let cut = Math.min(28, remainingBadge.length);
+          if (cut < remainingBadge.length) {
+            const wordBreak = remainingBadge.lastIndexOf(" ", cut);
+            if (wordBreak > 10) cut = wordBreak;
+          }
+          badgeLines.push(remainingBadge.slice(0, cut).trim());
+          remainingBadge = remainingBadge.slice(cut).trim();
+        }
+        if (remainingBadge) badgeLines[1] = `${badgeLines[1].slice(0, 27).trimEnd()}…`;
+        const badgeW = Math.max(48, Math.min(178, Math.max(...badgeLines.map((line) => line.length)) * 5.2 + 16));
+        const badgeH = badgeLines.length === 2 ? 30 : 18;
         g.append("rect")
           .attr("x", p.x + NODE_HALF_W - badgeW - 12)
-          .attr("y", p.y + 12)
+          .attr("y", p.y + 7)
           .attr("width", badgeW)
-          .attr("height", 17)
+          .attr("height", badgeH)
           .attr("rx", 5)
           .attr("fill", "rgba(255, 219, 204, 0.86)");
-        g.append("text")
+        const badgeText = g.append("text")
           .attr("x", p.x + NODE_HALF_W - badgeW / 2 - 12)
-          .attr("y", p.y + 24)
+          .attr("y", p.y + 20)
           .attr("text-anchor", "middle")
           .attr("font-size", 9.5)
           .attr("font-family", "Manrope, sans-serif")
           .attr("font-weight", 700)
-          .attr("fill", "#7a3000")
-          .text(badge);
+          .attr("fill", "#7a3000");
+        badgeLines.forEach((line, lineIndex) => badgeText.append("tspan")
+          .attr("x", p.x + NODE_HALF_W - badgeW / 2 - 12)
+          .attr("dy", lineIndex ? 12 : 0)
+          .text(line));
+        badgeText.append("title").text(badge);
         }
         g.on("click", function () {
           this.focus();

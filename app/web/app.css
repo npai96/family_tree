@@ -865,8 +865,10 @@ form button.graph-render-button {
 .journey-person-head {
   display: flex;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 8px;
 }
+.journey-person-head .lineage-name { min-width: 0; overflow-wrap: anywhere; }
 .lineage-name {
   font-family: "Newsreader", Georgia, serif;
   font-size: 24px;
@@ -888,6 +890,9 @@ form button.graph-render-button {
 .journey-chip {
   align-self: start;
   display: inline-block;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
   border-radius: 999px;
   padding: 3px 8px;
   background: var(--secondary-fixed);
