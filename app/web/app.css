@@ -597,6 +597,18 @@ form button.person-panel-find {
   color: #4f6273;
   border: 1px solid rgba(196, 198, 205, 0.6);
 }
+.signout-all-button {
+  width: fit-content;
+  margin: -2px 0 8px;
+  padding: 3px 0;
+  border-radius: 0;
+  background: transparent;
+  color: #5a6675;
+  font-size: 11px;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 .auth-mode-chip {
   max-width: min(48vw, 340px);
   border: 1px solid rgba(95, 105, 120, 0.24);

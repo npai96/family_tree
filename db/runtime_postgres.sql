@@ -10,6 +10,12 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS approved_accounts (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  verified_email TEXT NOT NULL,
+  approved_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS circles (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -210,11 +216,36 @@ CREATE TABLE IF NOT EXISTS circle_invitations (
   invited_by TEXT NOT NULL,
   created_at TEXT NOT NULL,
   responded_at TEXT,
-  UNIQUE (circle_id, invited_user_id, status),
+  expires_at TEXT NOT NULL,
+  revoked_at TEXT,
+  expired_at TEXT,
   FOREIGN KEY (circle_id) REFERENCES circles(id) ON DELETE CASCADE,
   FOREIGN KEY (invited_user_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (invited_by) REFERENCES users(id) ON DELETE CASCADE
 );
+
+-- Existing pending invitations had no lifetime. Expire them on upgrade rather
+-- than silently preserving indefinite acceptance. A read/create records expiry.
+ALTER TABLE circle_invitations ADD COLUMN IF NOT EXISTS expires_at TEXT;
+ALTER TABLE circle_invitations ADD COLUMN IF NOT EXISTS revoked_at TEXT;
+ALTER TABLE circle_invitations ADD COLUMN IF NOT EXISTS expired_at TEXT;
+UPDATE circle_invitations SET expires_at = created_at WHERE expires_at IS NULL;
+ALTER TABLE circle_invitations ALTER COLUMN expires_at SET NOT NULL;
+ALTER TABLE circle_invitations
+  DROP CONSTRAINT IF EXISTS circle_invitations_circle_id_invited_user_id_status_key;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_circle_invitations_pending
+  ON circle_invitations(circle_id, invited_user_id) WHERE status = 'pending';
+
+CREATE TABLE IF NOT EXISTS security_rate_limit_counters (
+  scope TEXT NOT NULL,
+  subject_hash TEXT NOT NULL,
+  window_start BIGINT NOT NULL,
+  request_count INTEGER NOT NULL CHECK (request_count >= 1),
+  PRIMARY KEY (scope, subject_hash, window_start)
+);
+
+CREATE INDEX IF NOT EXISTS idx_security_rate_limit_counters_window
+  ON security_rate_limit_counters(window_start);
 
 CREATE TABLE IF NOT EXISTS audit_logs (
   id TEXT PRIMARY KEY,

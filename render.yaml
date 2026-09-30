@@ -26,5 +26,7 @@ services:
         sync: false
       - key: PUBLIC_APP_URL
         sync: false
+      - key: APPROVED_TESTER_EMAILS
+        sync: false
       - key: SUPABASE_STORAGE_BUCKET
         value: family-media

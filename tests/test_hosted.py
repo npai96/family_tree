@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from app.api import hosted, main
 from app.api.db_runtime import configure_database, execute, get_conn, fetch_one
 from app.api.security import digest_token
+from scripts.revoke_hosted_sessions import revoke_sessions
 
 
 @pytest.fixture
@@ -25,6 +26,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(hosted, 'ENABLED', True)
     monkeypatch.setattr(hosted, 'SUPABASE_URL', 'https://test.supabase.co')
     monkeypatch.setattr(hosted, 'PUBLIC_APP_URL', 'https://test.example')
+    monkeypatch.setattr(hosted, 'APPROVED_TESTER_EMAILS', frozenset({'approved@example.test'}))
     return TestClient(main.app, base_url='https://test.example')
 
 
@@ -34,9 +36,20 @@ def session(user_id=None, source='supabase'):
     now = datetime.now(timezone.utc)
     with get_conn() as conn:
         execute(conn, 'INSERT INTO users VALUES (?, ?, ?) ON CONFLICT (id) DO NOTHING', (user_id, 'Tester', now.isoformat()))
+        if source == 'supabase':
+            execute(conn, '''INSERT INTO approved_accounts (user_id, verified_email, approved_at)
+                VALUES (?, ?, ?) ON CONFLICT (user_id) DO NOTHING''',
+                (user_id, 'approved@example.test', now.isoformat()))
         execute(conn, 'INSERT INTO auth_sessions (token, user_id, created_at, expires_at, auth_source) VALUES (?, ?, ?, ?, ?)',
                 (digest_token(token), user_id, now.isoformat(), (now + timedelta(days=14)).isoformat(), source))
     return {'Authorization': f'Bearer {token}'}
+
+
+def use_session_cookie(client: TestClient, authorization: dict[str, str]) -> str:
+    """Model a browser with an existing hosted session, without a JS bearer."""
+    token = authorization['Authorization'].split(' ', 1)[1]
+    client.cookies.set(hosted.SESSION_COOKIE, token)
+    return hosted.csrf_token(token)
 
 
 def test_verified_accounts_isolate_circles_and_restore_sessions(client):
@@ -58,7 +71,50 @@ def test_verified_accounts_isolate_circles_and_restore_sessions(client):
     assert returning.get('/circles', headers=owner).status_code == 401
 
 
-def test_oauth_pkce_callback_and_handoff(client, monkeypatch):
+def test_account_can_revoke_all_hosted_sessions_without_affecting_other_accounts(client):
+    user_id = str(uuid4())
+    first = session(user_id)
+    second = session(user_id)
+    other = session()
+    review = session(user_id, source='review')
+    circle_id = client.post('/circles', headers=first, json={'name': 'Private'}).json()['id']
+    ticket = client.post(f'/circles/{circle_id}/access-tickets', headers=second, json={'scope': 'media'}).json()['ticket']
+
+    assert client.post('/auth/managed/revoke-all', headers=first).status_code == 204
+    assert client.get('/auth/me', headers=first).status_code == 401
+    assert client.get('/auth/me', headers=second).status_code == 401
+    assert client.get('/auth/me', headers=other).status_code == 200
+    assert client.get('/auth/me', headers=review).status_code == 401  # review identity stays disabled in hosted mode
+    with get_conn() as conn:
+        row = fetch_one(conn, 'SELECT revoked_at FROM auth_sessions WHERE token = ?',
+                        (digest_token(review['Authorization'].split(' ', 1)[1]),))
+        assert row['revoked_at'] is None
+        assert main._principal_from_circle_access_ticket(conn, ticket, circle_id, 'media') is None
+
+    assert client.post('/auth/managed/revoke-all', headers=second).status_code == 401
+    assert client.post('/auth/managed/revoke-all').status_code == 401
+    assert client.post('/auth/managed/revoke-all', headers={'Authorization': 'Bearer unknown'}).status_code == 401
+
+
+def test_operator_revoke_is_dry_run_by_default_and_scoped_to_hosted_account(client):
+    user_id = str(uuid4())
+    hosted_session = session(user_id)
+    other_session = session()
+    review_session = session(user_id, source='review')
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        assert revoke_sessions(conn, user_id, now, apply=False) == 1
+    assert client.get('/auth/me', headers=hosted_session).status_code == 200
+    with get_conn() as conn:
+        assert revoke_sessions(conn, user_id, now, apply=True) == 1
+    assert client.get('/auth/me', headers=hosted_session).status_code == 401
+    assert client.get('/auth/me', headers=other_session).status_code == 200
+    with get_conn() as conn:
+        review_digest = digest_token(review_session['Authorization'].split(' ', 1)[1])
+        assert fetch_one(conn, 'SELECT revoked_at FROM auth_sessions WHERE token = ?', (review_digest,))['revoked_at'] is None
+
+
+def test_oauth_pkce_callback_sets_http_only_session_cookie(client, monkeypatch):
     user_id = str(uuid4())
     calls = []
     def provider(method, path, **kwargs):
@@ -67,7 +123,9 @@ def test_oauth_pkce_callback_and_handoff(client, monkeypatch):
             assert kwargs['json']['code_verifier']
             return httpx.Response(200, json={'access_token': 'verified-provider-token'})
         assert kwargs['headers']['Authorization'] == 'Bearer verified-provider-token'
-        return httpx.Response(200, json={'id': user_id, 'email_confirmed_at': '2026-09-18', 'user_metadata': {'full_name': 'Test Steward'}})
+        return httpx.Response(200, json={'id': user_id, 'email': 'approved@example.test',
+                                         'email_confirmed_at': '2026-09-18',
+                                         'user_metadata': {'full_name': 'Test Steward'}})
     monkeypatch.setattr(hosted, 'provider_request', provider)
     start = client.get('/auth/managed/start', follow_redirects=False)
     assert 'code_challenge_method=s256' in start.headers['location']
@@ -75,14 +133,171 @@ def test_oauth_pkce_callback_and_handoff(client, monkeypatch):
     callback = client.get('/auth/managed/callback?code=provider-code', follow_redirects=False)
     assert callback.headers['location'] == '/'
     assert 'provider-token' not in callback.headers['location']
-    handoff = client.get('/auth/managed/session')
-    assert handoff.headers['cache-control'] == 'no-store'
-    token = handoff.json()['access_token']
-    assert client.get('/auth/managed/session').json()['access_token'] is None
-    assert client.get('/auth/me', headers={'Authorization': f'Bearer {token}'}).json()['id'] == user_id
+    cookie_header = callback.headers['set-cookie']
+    assert hosted.SESSION_COOKIE + '=' in cookie_header
+    assert 'httponly' in cookie_header.lower()
+    assert 'secure' in cookie_header.lower()
+    assert 'samesite=lax' in cookie_header.lower()
+    assert 'path=/' in cookie_header.lower()
+    assert 'domain=' not in cookie_header.lower()
+    token = client.cookies.get(hosted.SESSION_COOKIE)
+    assert token
+    assert token not in callback.headers['location']
+    status = client.get('/auth/managed/session')
+    assert status.headers['cache-control'] == 'no-store'
+    assert status.json() == {'signed_in': True, 'csrf_token': hosted.csrf_token(token)}
+    assert token not in status.text
+    assert client.get('/auth/managed/session').json() == status.json()
+    assert client.get('/auth/me').json()['id'] == user_id
     with get_conn() as conn:
         assert fetch_one(conn, 'SELECT token FROM auth_sessions')['token'] == digest_token(token)
     assert len(calls) == 2
+
+
+def test_unapproved_google_identity_never_receives_app_session(client, monkeypatch):
+    user_id = str(uuid4())
+    def provider(method, path, **kwargs):
+        if path.startswith('/auth/v1/token'):
+            return httpx.Response(200, json={'access_token': 'provider-token'})
+        return httpx.Response(200, json={'id': user_id, 'email': 'not-approved@example.test',
+                                         'email_confirmed_at': '2026-09-18'})
+    monkeypatch.setattr(hosted, 'provider_request', provider)
+    assert client.get('/auth/managed/start', follow_redirects=False).status_code == 303
+    callback = client.get('/auth/managed/callback?code=provider-code', follow_redirects=False)
+    assert callback.status_code == 303 and callback.headers['location'] == '/?signin=failed'
+    assert hosted.SESSION_COOKIE not in client.cookies
+    with get_conn() as conn:
+        assert fetch_one(conn, 'SELECT id FROM users WHERE id = ?', (user_id,)) is None
+
+
+def test_first_v3_login_keeps_preexisting_v2_bearer_revoked(client, monkeypatch):
+    user_id = str(uuid4())
+    old = session(user_id)
+    old_digest = digest_token(old['Authorization'].split(' ', 1)[1])
+    with get_conn() as conn:
+        execute(conn, 'DELETE FROM approved_accounts WHERE user_id = ?', (user_id,))
+    assert client.get('/auth/me', headers=old).status_code == 401
+
+    def provider(method, path, **kwargs):
+        if path.startswith('/auth/v1/token'):
+            return httpx.Response(200, json={'access_token': 'provider-token'})
+        return httpx.Response(200, json={'id': user_id, 'email': 'approved@example.test',
+                                         'email_confirmed_at': '2026-09-18'})
+    monkeypatch.setattr(hosted, 'provider_request', provider)
+    assert client.get('/auth/managed/start', follow_redirects=False).status_code == 303
+    assert client.get('/auth/managed/callback?code=provider-code', follow_redirects=False).headers['location'] == '/'
+    assert client.get('/auth/me').status_code == 200
+    assert client.get('/auth/me', headers=old).status_code == 401
+    with get_conn() as conn:
+        assert fetch_one(conn, 'SELECT revoked_at FROM auth_sessions WHERE token = ?', (old_digest,))['revoked_at']
+
+
+def test_later_approved_login_preserves_first_device_session(client, monkeypatch):
+    user_id = str(uuid4())
+    def provider(method, path, **kwargs):
+        if path.startswith('/auth/v1/token'):
+            return httpx.Response(200, json={'access_token': 'provider-token'})
+        return httpx.Response(200, json={'id': user_id, 'email': 'approved@example.test',
+                                         'email_confirmed_at': '2026-09-18'})
+    monkeypatch.setattr(hosted, 'provider_request', provider)
+    second_device = TestClient(main.app, base_url='https://test.example')
+    for device in (client, second_device):
+        assert device.get('/auth/managed/start', follow_redirects=False).status_code == 303
+        assert device.get('/auth/managed/callback?code=provider-code', follow_redirects=False).headers['location'] == '/'
+    assert client.cookies.get(hosted.SESSION_COOKIE) != second_device.cookies.get(hosted.SESSION_COOKIE)
+    assert client.get('/auth/me').json()['id'] == user_id
+    assert second_device.get('/auth/me').json()['id'] == user_id
+
+
+def test_removing_tester_approval_revokes_existing_session_and_ticket(client, monkeypatch):
+    account = session()
+    circle = client.post('/circles', headers=account, json={'name': 'Private'}).json()['id']
+    ticket = client.post(f'/circles/{circle}/access-tickets', headers=account,
+                         json={'scope': 'media'}).json()['ticket']
+    monkeypatch.setattr(hosted, 'APPROVED_TESTER_EMAILS', frozenset())
+    assert client.get('/auth/me', headers=account).status_code == 401
+    assert client.get('/auth/managed/session').json()['signed_in'] is False
+    with get_conn() as conn:
+        assert main._principal_from_circle_access_ticket(conn, ticket, circle, 'media') is None
+
+
+def test_cookie_reads_work_but_writes_require_matching_csrf_header(client):
+    owner = session()
+    csrf = use_session_cookie(client, owner)
+    assert client.get('/auth/me').status_code == 200
+    assert client.post('/circles', json={'name': 'Blocked'}).status_code == 403
+    assert client.post('/circles', headers={'X-FT-CSRF': 'wrong'}, json={'name': 'Blocked'}).status_code == 403
+    created = client.post('/circles', headers={'X-FT-CSRF': csrf}, json={'name': 'Allowed'})
+    assert created.status_code == 200
+    assert [circle['name'] for circle in client.get('/circles').json()] == ['Allowed']
+    assert client.get('/auth/me', headers={'Authorization': 'Bearer unknown'}).status_code == 401
+
+
+def test_legacy_browser_migration_rotates_bearer_into_cookie(client):
+    legacy = session()
+    old_token = legacy['Authorization'].split(' ', 1)[1]
+    circle = client.post('/circles', headers=legacy, json={'name': 'Private'}).json()['id']
+    old_ticket = client.post(f'/circles/{circle}/access-tickets', headers=legacy,
+                             json={'scope': 'media'}).json()['ticket']
+    response = client.post('/auth/managed/migrate', headers=legacy)
+    assert response.status_code == 200
+    assert response.headers['cache-control'] == 'no-store'
+    cookie_header = response.headers['set-cookie'].lower()
+    assert 'httponly' in cookie_header and 'secure' in cookie_header and 'samesite=lax' in cookie_header
+    new_token = client.cookies.get(hosted.SESSION_COOKIE)
+    assert new_token and new_token != old_token
+    assert old_token not in response.text and new_token not in response.text
+    assert response.json() == {'signed_in': True, 'csrf_token': hosted.csrf_token(new_token)}
+    assert client.get('/auth/me', headers=legacy).status_code == 401
+    assert client.get('/auth/me').status_code == 200
+    assert client.get(f'/circles/{circle}/persons').status_code == 200
+    assert client.post('/auth/managed/migrate', headers=legacy).status_code == 401
+    with get_conn() as conn:
+        old = fetch_one(conn, 'SELECT revoked_at FROM auth_sessions WHERE token = ?', (digest_token(old_token),))
+        new = fetch_one(conn, 'SELECT revoked_at FROM auth_sessions WHERE token = ?', (digest_token(new_token),))
+        assert old['revoked_at'] is not None and new['revoked_at'] is None
+        assert main._principal_from_circle_access_ticket(conn, old_ticket, circle, 'media') is None
+
+
+def test_cookie_logout_revokes_session_and_media_tickets(client):
+    owner = session()
+    csrf = use_session_cookie(client, owner)
+    circle = client.post('/circles', headers={'X-FT-CSRF': csrf}, json={'name': 'Private'}).json()['id']
+    ticket = client.post(f'/circles/{circle}/access-tickets', headers={'X-FT-CSRF': csrf},
+                         json={'scope': 'media'}).json()['ticket']
+    assert client.post('/auth/managed/logout').status_code == 403
+    assert client.get('/auth/me').status_code == 200
+    assert client.post('/auth/managed/logout', headers={'X-FT-CSRF': csrf}).status_code == 204
+    assert client.get('/auth/managed/session').json() == {'signed_in': False, 'csrf_token': None}
+    assert client.get('/auth/me').status_code == 401
+    with get_conn() as conn:
+        assert main._principal_from_circle_access_ticket(conn, ticket, circle, 'media') is None
+
+
+def test_cookie_revoke_all_invalidates_other_devices_and_tickets(client):
+    user_id = str(uuid4())
+    first = session(user_id)
+    other_device = session(user_id)
+    different_account = session()
+    csrf = use_session_cookie(client, first)
+    circle = client.post('/circles', headers={'X-FT-CSRF': csrf}, json={'name': 'Private'}).json()['id']
+    ticket = client.post(f'/circles/{circle}/access-tickets', headers=other_device,
+                         json={'scope': 'media'}).json()['ticket']
+    assert client.post('/auth/managed/revoke-all').status_code == 403
+    assert client.post('/auth/managed/revoke-all', headers={'X-FT-CSRF': csrf}).status_code == 204
+    assert client.get('/auth/me').status_code == 401
+    assert client.get('/auth/me', headers=other_device).status_code == 401
+    assert client.get('/auth/me', headers=different_account).status_code == 200
+    with get_conn() as conn:
+        assert main._principal_from_circle_access_ticket(conn, ticket, circle, 'media') is None
+
+
+def test_review_mode_still_accepts_explicit_bearer_without_hosted_cookie(client, monkeypatch):
+    monkeypatch.setattr(hosted, 'ENABLED', False)
+    monkeypatch.setattr(main, 'REVIEW_AUTH_ENABLED', True)
+    review = session(source='review')
+    assert client.get('/auth/me', headers=review).status_code == 200
+    assert client.post('/circles', headers=review, json={'name': 'Review'}).status_code == 200
 
 
 def test_callback_without_pkce_and_provider_failure_do_not_create_sessions(client, monkeypatch):
@@ -132,6 +347,13 @@ def test_hosted_config_fails_closed(monkeypatch):
     monkeypatch.setattr(hosted, 'SUPABASE_KEY', 'sb_publishable_test')
     monkeypatch.setattr(hosted, 'SERVICE_KEY', 'legacy-service-role-jwt')
     with pytest.raises(RuntimeError, match='keys'):
+        hosted.validate_configuration(False)
+    monkeypatch.setattr(hosted, 'SERVICE_KEY', 'sb_secret_test')
+    monkeypatch.setattr(hosted, 'PUBLIC_APP_URL', 'https://test.example')
+    monkeypatch.setattr(hosted, 'SUPABASE_URL', 'https://test.supabase.co')
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://localhost/test')
+    monkeypatch.setattr(hosted, 'APPROVED_TESTER_EMAILS', frozenset())
+    with pytest.raises(RuntimeError, match='APPROVED_TESTER_EMAILS'):
         hosted.validate_configuration(False)
 
 

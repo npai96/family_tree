@@ -28,6 +28,13 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS approved_accounts (
+  user_id TEXT PRIMARY KEY,
+  verified_email TEXT NOT NULL,
+  approved_at TEXT NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS circles (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -228,11 +235,27 @@ CREATE TABLE IF NOT EXISTS circle_invitations (
   invited_by TEXT NOT NULL,
   created_at TEXT NOT NULL,
   responded_at TEXT,
-  UNIQUE (circle_id, invited_user_id, status),
+  expires_at TEXT NOT NULL,
+  revoked_at TEXT,
+  expired_at TEXT,
   FOREIGN KEY (circle_id) REFERENCES circles(id) ON DELETE CASCADE,
   FOREIGN KEY (invited_user_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (invited_by) REFERENCES users(id) ON DELETE CASCADE
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_circle_invitations_pending
+  ON circle_invitations(circle_id, invited_user_id) WHERE status = 'pending';
+
+CREATE TABLE IF NOT EXISTS security_rate_limit_counters (
+  scope TEXT NOT NULL,
+  subject_hash TEXT NOT NULL,
+  window_start INTEGER NOT NULL,
+  request_count INTEGER NOT NULL CHECK (request_count >= 1),
+  PRIMARY KEY (scope, subject_hash, window_start)
+);
+
+CREATE INDEX IF NOT EXISTS idx_security_rate_limit_counters_window
+  ON security_rate_limit_counters(window_start);
 
 CREATE TABLE IF NOT EXISTS audit_logs (
   id TEXT PRIMARY KEY,
@@ -386,6 +409,49 @@ def _load_postgres_init_sql() -> str:
     return (Path(__file__).resolve().parents[2] / "db" / "runtime_postgres.sql").read_text()
 
 
+def migrate_sqlite_invitation_lifecycle(conn: Any) -> None:
+    """Replace the old all-status unique key while preserving invitation history.
+
+    Legacy pending invitations expire on upgrade, a fail-closed choice because
+    they previously had no known lifetime.  The next invitation-list/create
+    request records that expiry without erasing the old row.
+    """
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(circle_invitations)")}
+    if "expires_at" in columns:
+        return
+    conn.execute(
+        """CREATE TABLE circle_invitations_v3 (
+          id TEXT PRIMARY KEY,
+          circle_id TEXT NOT NULL,
+          invited_user_id TEXT NOT NULL,
+          role TEXT NOT NULL CHECK (role IN ('editor', 'viewer')),
+          status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'declined', 'cancelled')),
+          invited_by TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          responded_at TEXT,
+          expires_at TEXT NOT NULL,
+          revoked_at TEXT,
+          expired_at TEXT,
+          FOREIGN KEY (circle_id) REFERENCES circles(id) ON DELETE CASCADE,
+          FOREIGN KEY (invited_user_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (invited_by) REFERENCES users(id) ON DELETE CASCADE
+        )"""
+    )
+    conn.execute(
+        """INSERT INTO circle_invitations_v3
+           (id, circle_id, invited_user_id, role, status, invited_by, created_at,
+            responded_at, expires_at, revoked_at, expired_at)
+           SELECT id, circle_id, invited_user_id, role, status, invited_by, created_at,
+                  responded_at, created_at, NULL, NULL FROM circle_invitations"""
+    )
+    conn.execute("DROP TABLE circle_invitations")
+    conn.execute("ALTER TABLE circle_invitations_v3 RENAME TO circle_invitations")
+    conn.execute(
+        """CREATE UNIQUE INDEX idx_circle_invitations_pending
+           ON circle_invitations(circle_id, invited_user_id) WHERE status = 'pending'"""
+    )
+
+
 def init_db(media_dir: Path) -> None:
     media_dir.mkdir(parents=True, exist_ok=True)
     if get_db_backend() == "sqlite":
@@ -393,6 +459,7 @@ def init_db(media_dir: Path) -> None:
         sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         with get_conn() as conn:
             conn.executescript(SQLITE_INIT_SQL)
+            migrate_sqlite_invitation_lifecycle(conn)
             columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_sessions)")}
             if "auth_source" not in columns:
                 conn.execute("ALTER TABLE auth_sessions ADD COLUMN auth_source TEXT NOT NULL DEFAULT 'review'")

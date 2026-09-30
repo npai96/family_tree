@@ -20,6 +20,8 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.api.db_runtime import INTEGRITY_ERRORS, configure_database, execute, fetch_all, fetch_one, get_conn, get_db_backend, init_db
+from app.api.authorization import CircleAction, role_allows
+from app.api.cookie_auth import HostedCookieAuthMiddleware
 from app.api.observability import REQUEST_METRICS, RequestObservabilityMiddleware
 from app.api.privacy import (
     SENSITIVE_PERSON_FIELDS,
@@ -30,6 +32,14 @@ from app.api.privacy import (
 )
 from app.api.security import digest_token, load_runtime_security_config
 from app.api.security_headers import BrowserSecurityHeadersMiddleware
+from app.api.security_abuse import (
+    claim_invitation_response,
+    create_invitation_record,
+    enforce_rate_limit,
+    expire_pending_invitations,
+    require_storage_capacity,
+    revoke_invitation_record,
+)
 from app.api import hosted
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -181,13 +191,14 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Family Tree MVP API", version="0.2.0", lifespan=lifespan)
+app.add_middleware(HostedCookieAuthMiddleware)
 app.add_middleware(RequestObservabilityMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-User-Id"],
+    allow_headers=["Authorization", "Content-Type", "X-User-Id", "X-FT-CSRF"],
     expose_headers=["X-Request-Id", "Server-Timing"],
 )
 app.add_middleware(BrowserSecurityHeadersMiddleware)
@@ -274,6 +285,9 @@ class CircleInvitationOut(BaseModel):
     invited_by: str
     created_at: str
     responded_at: Optional[str] = None
+    expires_at: Optional[str] = None
+    revoked_at: Optional[str] = None
+    expired_at: Optional[str] = None
 
 
 class InvitationRespond(BaseModel):
@@ -527,24 +541,35 @@ class Edge:
 
 class CircleWSManager:
     def __init__(self) -> None:
-        self.connections: dict[str, set[WebSocket]] = {}
+        self.connections: dict[str, dict[WebSocket, CircleWSPrincipal]] = {}
 
-    async def connect(self, circle_id: str, ws: WebSocket, subprotocol: Optional[str] = None) -> None:
+    async def connect(
+        self,
+        circle_id: str,
+        ws: WebSocket,
+        principal: CircleWSPrincipal,
+        subprotocol: Optional[str] = None,
+    ) -> None:
         await ws.accept(subprotocol=subprotocol)
-        self.connections.setdefault(circle_id, set()).add(ws)
+        self.connections.setdefault(circle_id, {})[ws] = principal
 
     def disconnect(self, circle_id: str, ws: WebSocket) -> None:
         if circle_id not in self.connections:
             return
-        self.connections[circle_id].discard(ws)
+        self.connections[circle_id].pop(ws, None)
         if not self.connections[circle_id]:
             self.connections.pop(circle_id, None)
 
     async def broadcast(self, circle_id: str, payload: dict[str, Any]) -> None:
-        peers = list(self.connections.get(circle_id, set()))
+        peers = list(self.connections.get(circle_id, {}).items())
         stale: list[WebSocket] = []
-        for ws in peers:
+        for ws, principal in peers:
             try:
+                with get_conn() as conn:
+                    if not _ws_principal_is_active(conn, circle_id, principal):
+                        await ws.close(code=1008)
+                        stale.append(ws)
+                        continue
                 await ws.send_json(payload)
             except Exception:
                 stale.append(ws)
@@ -553,6 +578,49 @@ class CircleWSManager:
 
 
 ws_manager = CircleWSManager()
+
+
+@dataclass(frozen=True)
+class CircleAccessPrincipal:
+    user_id: str
+    session_digest: str
+
+
+@dataclass(frozen=True)
+class CircleWSPrincipal:
+    user_id: str
+    session_digest: Optional[str]
+
+
+def _ws_principal_is_active(conn: Any, circle_id: str, principal: CircleWSPrincipal) -> bool:
+    """Recheck session and membership before delivering each realtime event."""
+    if principal.session_digest:
+        session = fetch_one(
+            conn,
+            """
+            SELECT user_id FROM auth_sessions
+            WHERE token = ? AND user_id = ? AND revoked_at IS NULL
+              AND expires_at >= ? AND auth_source = ?
+            """,
+            (
+                principal.session_digest,
+                principal.user_id,
+                utc_now(),
+                "supabase" if hosted.ENABLED else "review",
+            ),
+        )
+        if not session:
+            return False
+        if hosted.ENABLED and not hosted.account_is_approved(conn, principal.user_id):
+            return False
+    elif not _legacy_user_header_enabled():
+        return False
+    member = fetch_one(
+        conn,
+        "SELECT role FROM circle_memberships WHERE circle_id = ? AND user_id = ?",
+        (circle_id, principal.user_id),
+    )
+    return bool(member and role_allows(str(member["role"]), "use_realtime"))
 SUPPORTED_RELATIONSHIP_TYPES = {
     "parent_of",
     "child_of",
@@ -648,6 +716,8 @@ def _user_id_from_session_token(conn: Any, token: Optional[str]) -> Optional[str
         return None
     if row["expires_at"] < utc_now():
         return None
+    if hosted.ENABLED and not hosted.account_is_approved(conn, row["user_id"]):
+        return None
     return str(row["user_id"])
 
 
@@ -655,14 +725,14 @@ def _hash_access_ticket(ticket: str) -> str:
     return digest_token(ticket)
 
 
-def _user_id_from_circle_access_ticket(
+def _principal_from_circle_access_ticket(
     conn: Any,
     ticket: Optional[str],
     circle_id: str,
     scope: Literal["media", "websocket"],
     *,
     consume: bool = False,
-) -> Optional[str]:
+) -> Optional[CircleAccessPrincipal]:
     if not (REVIEW_AUTH_ENABLED or hosted.ENABLED) or not ticket:
         return None
 
@@ -671,7 +741,7 @@ def _user_id_from_circle_access_ticket(
     row = fetch_one(
         conn,
         """
-        SELECT session.user_id
+        SELECT session.user_id, ticket.session_token
         FROM circle_access_tickets AS ticket
         INNER JOIN auth_sessions AS session ON session.token = ticket.session_token
         WHERE ticket.ticket_hash = ?
@@ -688,6 +758,9 @@ def _user_id_from_circle_access_ticket(
     if not row:
         return None
 
+    if hosted.ENABLED and not hosted.account_is_approved(conn, row["user_id"]):
+        return None
+
     if consume:
         consumed = execute(
             conn,
@@ -700,7 +773,7 @@ def _user_id_from_circle_access_ticket(
         )
         if consumed.rowcount != 1:
             return None
-    return str(row["user_id"])
+    return CircleAccessPrincipal(user_id=str(row["user_id"]), session_digest=str(row["session_token"]))
 
 
 def _require_authenticated_user(
@@ -745,7 +818,7 @@ def _log_audit(
     )
 
 
-def _get_role(conn: Any, circle_id: str, user_id: str) -> str:
+def _require_circle_action(conn: Any, circle_id: str, user_id: str, action: CircleAction) -> str:
     row = fetch_one(
         conn,
         "SELECT role FROM circle_memberships WHERE circle_id = ? AND user_id = ?",
@@ -753,7 +826,15 @@ def _get_role(conn: Any, circle_id: str, user_id: str) -> str:
     )
     if not row:
         raise HTTPException(status_code=403, detail="Not a member of this circle")
-    return str(row["role"])
+    role = str(row["role"])
+    if not role_allows(role, action):
+        raise HTTPException(status_code=403, detail="Insufficient role for this action")
+    return role
+
+
+def _get_role(conn: Any, circle_id: str, user_id: str) -> str:
+    """Read policy used by existing circle routes."""
+    return _require_circle_action(conn, circle_id, user_id, "view_circle")
 
 
 def _person_out(row: Any, role: str) -> PersonOut:
@@ -805,13 +886,6 @@ def _require_discussion_entity_exists(
     )
     if not row:
         raise HTTPException(status_code=404, detail="Discussion entity not found in circle")
-
-
-def _require_circle_role(conn: Any, circle_id: str, user_id: str, allowed_roles: set[str]) -> str:
-    role = _get_role(conn, circle_id, user_id)
-    if role not in allowed_roles:
-        raise HTTPException(status_code=403, detail="Insufficient role for this action")
-    return role
 
 
 def _safe_person_patch(patch: dict[str, Any]) -> tuple[str, list[Any]]:
@@ -1225,13 +1299,14 @@ async def circle_ws(
     ticket = ticket_protocol.removeprefix("family-tree-ticket.") or None
     accepted_subprotocol = "family-tree.v1" if "family-tree.v1" in offered_subprotocols else None
     with get_conn() as conn:
-        resolved_user_id = _user_id_from_circle_access_ticket(
+        access_principal = _principal_from_circle_access_ticket(
             conn,
             ticket,
             circle_id,
             "websocket",
             consume=True,
         )
+        resolved_user_id = access_principal.user_id if access_principal else None
         if not resolved_user_id and _legacy_user_header_enabled():
             resolved_user_id = user_id
         if not resolved_user_id:
@@ -1239,12 +1314,16 @@ async def circle_ws(
             return
         try:
             _require_user(conn, resolved_user_id)
-            _get_role(conn, circle_id, resolved_user_id)
+            _require_circle_action(conn, circle_id, resolved_user_id, "use_realtime")
         except HTTPException:
             await websocket.close(code=1008)
             return
 
-    await ws_manager.connect(circle_id, websocket, subprotocol=accepted_subprotocol)
+    principal = CircleWSPrincipal(
+        user_id=resolved_user_id,
+        session_digest=access_principal.session_digest if access_principal else None,
+    )
+    await ws_manager.connect(circle_id, websocket, principal, subprotocol=accepted_subprotocol)
     await ws_manager.broadcast(
         circle_id,
         {"type": "presence.updated", "circle_id": circle_id, "user_id": resolved_user_id, "state": "joined"},
@@ -1252,7 +1331,13 @@ async def circle_ws(
     try:
         while True:
             await websocket.receive_text()
+            with get_conn() as conn:
+                if not _ws_principal_is_active(conn, circle_id, principal):
+                    await websocket.close(code=1008)
+                    break
     except WebSocketDisconnect:
+        pass
+    finally:
         ws_manager.disconnect(circle_id, websocket)
         await ws_manager.broadcast(
             circle_id,
@@ -1391,7 +1476,12 @@ def issue_circle_access_ticket(
         if not actor_user_id or not session_token:
             raise HTTPException(status_code=401, detail="Missing or invalid auth token")
         _require_user(conn, actor_user_id)
-        _get_role(conn, circle_id, actor_user_id)
+        _require_circle_action(
+            conn,
+            circle_id,
+            actor_user_id,
+            "access_media" if payload.scope == "media" else "use_realtime",
+        )
         execute(conn, "DELETE FROM circle_access_tickets WHERE expires_at < ?", (now,))
         execute(
             conn,
@@ -1521,7 +1611,7 @@ def add_member(
     now = utc_now()
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        _require_circle_role(conn, circle_id, actor_user_id, {"owner"})
+        _require_circle_action(conn, circle_id, actor_user_id, "manage_members")
         _require_user(conn, payload.user_id)
         existing = fetch_one(
             conn,
@@ -1591,7 +1681,7 @@ def transfer_ownership(
 ) -> CircleMembershipOut:
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        _require_circle_role(conn, circle_id, actor_user_id, {"owner"})
+        _require_circle_action(conn, circle_id, actor_user_id, "manage_members")
         _require_user(conn, payload.new_owner_user_id)
         if payload.new_owner_user_id == actor_user_id:
             raise HTTPException(status_code=400, detail="New owner must be different from current owner")
@@ -1642,58 +1732,53 @@ def create_invitation(
     x_user_id: Optional[str] = Header(default=None),
     authorization: Optional[str] = Header(default=None),
 ) -> CircleInvitationOut:
-    invitation_id = str(uuid4())
-    now = utc_now()
+    # Consume the durable counter before the invitation transaction.  A rejected
+    # request must not roll back its own abuse record.
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        _require_circle_role(conn, circle_id, actor_user_id, {"owner"})
+        _require_circle_action(conn, circle_id, actor_user_id, "manage_invitations")
+    enforce_rate_limit("invitation.create", actor_user_id)
+    with get_conn() as conn:
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
+        _require_circle_action(conn, circle_id, actor_user_id, "manage_invitations")
 
         invited_user_id = payload.invited_user_id
         if not invited_user_id and payload.invited_display_name and payload.invited_display_name.strip():
-            row = fetch_one(
+            if hosted.ENABLED:
+                raise HTTPException(status_code=400, detail="Use the recipient's invitation code")
+            matches = fetch_all(
                 conn,
-                "SELECT id FROM users WHERE lower(display_name) = lower(?) ORDER BY created_at ASC LIMIT 1",
+                "SELECT id FROM users WHERE lower(display_name) = lower(?) LIMIT 2",
                 (payload.invited_display_name.strip(),),
             )
-            if row:
-                invited_user_id = row["id"]
+            if len(matches) > 1:
+                raise HTTPException(status_code=409, detail="Display name is ambiguous; use an invitation code")
+            if matches:
+                invited_user_id = matches[0]["id"]
         if not invited_user_id:
             raise HTTPException(status_code=400, detail="Provide invited_user_id or a resolvable invited_display_name")
         _require_user(conn, invited_user_id)
         if invited_user_id == actor_user_id:
             raise HTTPException(status_code=400, detail="Cannot invite yourself")
 
-        existing = fetch_one(
-            conn,
-            """
-            SELECT id FROM circle_invitations
-            WHERE circle_id = ? AND invited_user_id = ? AND status = 'pending'
-            """,
-            (circle_id, invited_user_id),
-        )
-        if existing:
-            raise HTTPException(status_code=409, detail="Pending invitation already exists for this user")
-
-        execute(
-            conn,
-            """
-            INSERT INTO circle_invitations (
-              id, circle_id, invited_user_id, role, status, invited_by, created_at, responded_at
-            ) VALUES (?, ?, ?, ?, 'pending', ?, ?, NULL)
-            """,
-            (invitation_id, circle_id, invited_user_id, payload.role, actor_user_id, now),
-        )
-        row = fetch_one(conn, "SELECT * FROM circle_invitations WHERE id = ?", (invitation_id,))
-        _log_audit(
+        invitation = create_invitation_record(
             conn,
             circle_id=circle_id,
-            actor_user_id=actor_user_id,
-            action="invitation.created",
-            entity_type="invitation",
-            entity_id=invitation_id,
-            payload={"invited_user_id": invited_user_id, "role": payload.role},
+            invited_user_id=invited_user_id,
+            role=payload.role,
+            invited_by=actor_user_id,
         )
-    return CircleInvitationOut(**dict(row))
+        if invitation.pop("newly_created"):
+            _log_audit(
+                conn,
+                circle_id=circle_id,
+                actor_user_id=actor_user_id,
+                action="invitation.created",
+                entity_type="invitation",
+                entity_id=invitation["id"],
+                payload={"invited_user_id": invited_user_id, "role": payload.role},
+            )
+    return CircleInvitationOut(**invitation)
 
 
 @app.get("/circles/{circle_id}/invitations", response_model=list[CircleInvitationOut])
@@ -1704,7 +1789,8 @@ def list_circle_invitations(
 ) -> list[CircleInvitationOut]:
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        _require_circle_action(conn, circle_id, actor_user_id, "view_invitations")
+        expire_pending_invitations(conn, circle_id=circle_id)
         rows = fetch_all(
             conn,
             """
@@ -1726,6 +1812,7 @@ def list_my_invitations(
 ) -> list[CircleInvitationOut]:
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
+        expire_pending_invitations(conn)
         if status:
             rows = fetch_all(
                 conn,
@@ -1748,28 +1835,16 @@ def respond_invitation(
     x_user_id: Optional[str] = Header(default=None),
     authorization: Optional[str] = Header(default=None),
 ) -> CircleInvitationOut:
-    responded_at = utc_now()
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        row = fetch_one(
-            conn,
-            "SELECT * FROM circle_invitations WHERE id = ?",
-            (invitation_id,),
+    enforce_rate_limit("invitation.respond", actor_user_id)
+    with get_conn() as conn:
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
+        row = claim_invitation_response(
+            conn, invitation_id=invitation_id,
+            invited_user_id=actor_user_id, action=payload.action,
         )
-        if not row:
-            raise HTTPException(status_code=404, detail="Invitation not found")
-        if row["invited_user_id"] != actor_user_id:
-            raise HTTPException(status_code=403, detail="Not allowed to respond to this invitation")
-        if row["status"] != "pending":
-            raise HTTPException(status_code=409, detail="Invitation already responded")
-
-        new_status = "accepted" if payload.action == "accept" else "declined"
-        execute(
-            conn,
-            "UPDATE circle_invitations SET status = ?, responded_at = ? WHERE id = ?",
-            (new_status, responded_at, invitation_id),
-        )
-        if new_status == "accepted":
+        if row["status"] == "accepted":
             member = fetch_one(
                 conn,
                 "SELECT role FROM circle_memberships WHERE circle_id = ? AND user_id = ?",
@@ -1782,13 +1857,13 @@ def respond_invitation(
                     INSERT INTO circle_memberships (circle_id, user_id, role, created_at)
                     VALUES (?, ?, ?, ?)
                     """,
-                    (row["circle_id"], actor_user_id, row["role"], responded_at),
+                    (row["circle_id"], actor_user_id, row["role"], row["responded_at"]),
                 )
-            elif member["role"] != "owner":
+            elif member["role"] == "viewer" and row["role"] == "editor":
                 execute(
                     conn,
-                    "UPDATE circle_memberships SET role = ? WHERE circle_id = ? AND user_id = ?",
-                    (row["role"], row["circle_id"], actor_user_id),
+                    "UPDATE circle_memberships SET role = 'editor' WHERE circle_id = ? AND user_id = ?",
+                    (row["circle_id"], actor_user_id),
                 )
             _log_audit(
                 conn,
@@ -1809,8 +1884,24 @@ def respond_invitation(
                 entity_id=invitation_id,
                 payload=None,
             )
-        out = fetch_one(conn, "SELECT * FROM circle_invitations WHERE id = ?", (invitation_id,))
-    return CircleInvitationOut(**dict(out))
+    return CircleInvitationOut(**row)
+
+
+@app.post("/circles/{circle_id}/invitations/{invitation_id}/revoke", response_model=CircleInvitationOut)
+def revoke_invitation(
+    circle_id: str,
+    invitation_id: str,
+    x_user_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> CircleInvitationOut:
+    with get_conn() as conn:
+        actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
+        _require_circle_action(conn, circle_id, actor_user_id, "manage_invitations")
+        row = revoke_invitation_record(conn, invitation_id=invitation_id, circle_id=circle_id)
+        _log_audit(conn, circle_id=circle_id, actor_user_id=actor_user_id,
+                   action="invitation.revoked", entity_type="invitation", entity_id=invitation_id,
+                   payload={"invited_user_id": row["invited_user_id"]})
+    return CircleInvitationOut(**row)
 
 
 @app.get("/circles/{circle_id}/audit-logs", response_model=list[AuditLogOut])
@@ -1850,7 +1941,7 @@ def create_person(
     _validate_person_dates(payload.birth_date, payload.death_date)
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        role = _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        role = _require_circle_action(conn, circle_id, actor_user_id, "edit_person")
         dup_hints = _find_person_duplicates(
             conn,
             circle_id,
@@ -1955,7 +2046,7 @@ def update_person(
 
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        role = _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        role = _require_circle_action(conn, circle_id, actor_user_id, "edit_person")
         existing = fetch_one(
             conn,
             "SELECT * FROM persons WHERE id = ? AND circle_id = ?",
@@ -2038,6 +2129,7 @@ def list_person_revisions(
         )
         if not person:
             raise HTTPException(status_code=404, detail="Person not found in circle")
+
         rows = fetch_all(
             conn,
             """
@@ -2063,7 +2155,7 @@ def create_person_place(
     now = utc_now()
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        _require_circle_action(conn, circle_id, actor_user_id, "edit_person")
         person = fetch_one(
             conn,
             "SELECT id FROM persons WHERE id = ? AND circle_id = ?",
@@ -2195,7 +2287,7 @@ async def upload_person_media(
     now = utc_now()
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        _require_circle_action(conn, circle_id, actor_user_id, "upload_media")
         person = fetch_one(
             conn,
             "SELECT id FROM persons WHERE id = ? AND circle_id = ?",
@@ -2204,6 +2296,7 @@ async def upload_person_media(
         if not person:
             raise HTTPException(status_code=404, detail="Person not found in circle")
 
+    enforce_rate_limit("upload", actor_user_id)
     person_dir = MEDIA_DIR / circle_id / person_id
     person_dir.mkdir(parents=True, exist_ok=True)
     temporary_path = person_dir / f".{asset_id}.uploading"
@@ -2246,6 +2339,18 @@ async def upload_person_media(
         if hosted.ENABLED and media_type not in {"image/jpeg", "image/png"}:
             raise HTTPException(status_code=415, detail="This hosted demo accepts JPEG or PNG images only")
 
+        # Reject a known-over-quota upload before writing to remote Storage.
+        # The second check beside the metadata INSERT remains authoritative if
+        # another worker uploads in the meantime.
+        with get_conn() as conn:
+            _require_circle_action(conn, circle_id, actor_user_id, "upload_media")
+            if not fetch_one(conn, "SELECT id FROM persons WHERE id = ? AND circle_id = ?", (person_id, circle_id)):
+                raise HTTPException(status_code=404, detail="Person not found in circle")
+            require_storage_capacity(
+                conn, circle_id=circle_id, account_id=actor_user_id,
+                additional_bytes=bytes_size,
+            )
+
         original_name = _safe_media_filename(file.filename, media_type)
         stored_name = f"{asset_id}{MEDIA_EXTENSION_BY_TYPE[media_type]}"
         stored_path = person_dir / stored_name
@@ -2255,6 +2360,13 @@ async def upload_person_media(
             await run_in_threadpool(hosted.upload_object, remote_key, stored_path, media_type)
 
         with get_conn() as conn:
+            _require_circle_action(conn, circle_id, actor_user_id, "upload_media")
+            if not fetch_one(conn, "SELECT id FROM persons WHERE id = ? AND circle_id = ?", (person_id, circle_id)):
+                raise HTTPException(status_code=404, detail="Person not found in circle")
+            require_storage_capacity(
+                conn, circle_id=circle_id, account_id=actor_user_id,
+                additional_bytes=bytes_size,
+            )
             execute(
                 conn,
                 """
@@ -2307,7 +2419,14 @@ def list_person_media(
 ) -> list[MediaAssetOut]:
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        _get_role(conn, circle_id, actor_user_id)
+        _require_circle_action(conn, circle_id, actor_user_id, "access_media")
+        person = fetch_one(
+            conn,
+            "SELECT id FROM persons WHERE id = ? AND circle_id = ?",
+            (person_id, circle_id),
+        )
+        if not person:
+            raise HTTPException(status_code=404, detail="Person not found in circle")
         rows = fetch_all(
             conn,
             """
@@ -2330,7 +2449,7 @@ def list_circle_media_previews(
     preview_placeholders = ", ".join("?" for _ in SAFE_MEDIA_PREVIEW_TYPES)
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        _get_role(conn, circle_id, actor_user_id)
+        _require_circle_action(conn, circle_id, actor_user_id, "access_media")
         rows = fetch_all(
             conn,
             f"""
@@ -2373,10 +2492,11 @@ def download_media(
         if authorization or (_legacy_user_header_enabled() and (x_user_id or user_id)):
             actor_user_id = _require_authenticated_user(conn, x_user_id or user_id, authorization)
         else:
-            actor_user_id = _user_id_from_circle_access_ticket(conn, ticket, circle_id, "media")
-            if not actor_user_id:
+            access_principal = _principal_from_circle_access_ticket(conn, ticket, circle_id, "media")
+            if not access_principal:
                 raise HTTPException(status_code=401, detail="Missing or invalid media access ticket")
-        _get_role(conn, circle_id, actor_user_id)
+            actor_user_id = access_principal.user_id
+        _require_circle_action(conn, circle_id, actor_user_id, "access_media")
         row = fetch_one(
             conn,
             "SELECT * FROM media_assets WHERE id = ? AND circle_id = ?",
@@ -2425,7 +2545,7 @@ def create_relationship(
         )
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        _require_circle_action(conn, circle_id, actor_user_id, "edit_circle")
         from_person_id, to_person_id = _canonicalize_relationship_endpoints(
             payload.from_person_id,
             payload.to_person_id,
@@ -2506,7 +2626,7 @@ def update_relationship(
 ) -> RelationshipOut:
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        _require_circle_action(conn, circle_id, actor_user_id, "edit_circle")
         existing = fetch_one(
             conn,
             """
@@ -2584,7 +2704,7 @@ def delete_relationship(
 ) -> dict[str, str]:
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        _require_circle_action(conn, circle_id, actor_user_id, "edit_circle")
         row = fetch_one(
             conn,
             "SELECT id, from_person_id, to_person_id, relationship_type FROM relationships WHERE id = ? AND circle_id = ?",
@@ -2646,7 +2766,7 @@ def create_context_event(
     now = utc_now()
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        _require_circle_action(conn, circle_id, actor_user_id, "edit_circle")
         execute(
             conn,
             """
@@ -2715,7 +2835,7 @@ def list_context_event_persons(
             f"""
             SELECT {person_columns}
             FROM persons p
-            INNER JOIN person_context_links pcl ON pcl.person_id = p.id
+            INNER JOIN person_context_links pcl ON pcl.person_id = p.id AND pcl.circle_id = p.circle_id
             WHERE pcl.circle_id = ? AND pcl.context_event_id = ?
             ORDER BY p.full_name ASC
             """,
@@ -2735,7 +2855,7 @@ def link_context_event_to_person(
     now = utc_now()
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        _require_circle_action(conn, circle_id, actor_user_id, "edit_circle")
 
         person = fetch_one(
             conn,
@@ -2823,7 +2943,7 @@ def get_person_timeline(
             SELECT ce.*
             FROM context_events ce
             INNER JOIN person_context_links pcl
-              ON pcl.context_event_id = ce.id
+              ON pcl.context_event_id = ce.id AND pcl.circle_id = ce.circle_id
             WHERE ce.circle_id = ? AND pcl.person_id = ?
             ORDER BY ce.date ASC
             """,
@@ -2908,6 +3028,7 @@ def get_subgraph(
         if not root_exists:
             raise HTTPException(status_code=404, detail="Root person not found in circle")
 
+    enforce_rate_limit("read.heavy", actor_user_id)
     seen_person_ids, seen_edges = _compute_subgraph(
         circle_id=circle_id,
         root_person_id=root_person_id,
@@ -2920,7 +3041,8 @@ def get_subgraph(
 
     with get_conn() as conn:
         # Traversal may take longer than a simple list query, so re-check the
-        # membership immediately before serializing sensitive person fields.
+        # session and membership immediately before serializing person fields.
+        _require_authenticated_user(conn, x_user_id, authorization)
         role = _get_role(conn, circle_id, actor_user_id)
         person_columns = person_response_select_clause(role)
         placeholders = ",".join("?" for _ in seen_person_ids)
@@ -2971,6 +3093,7 @@ def get_subgraph_timeline(
         if not root_exists:
             raise HTTPException(status_code=404, detail="Root person not found in circle")
 
+    enforce_rate_limit("read.heavy", actor_user_id)
     person_ids, _ = _compute_subgraph(
         circle_id=circle_id,
         root_person_id=root_person_id,
@@ -2992,6 +3115,8 @@ def get_subgraph_timeline(
 
     timeline: list[TimelineItem] = []
     with get_conn() as conn:
+        _require_authenticated_user(conn, x_user_id, authorization)
+        _get_role(conn, circle_id, actor_user_id)
         person_placeholders = ",".join("?" for _ in person_ids)
         person_rows = fetch_all(
             conn,
@@ -3055,7 +3180,7 @@ def get_subgraph_timeline(
             f"""
             SELECT DISTINCT ce.*
             FROM context_events ce
-            INNER JOIN person_context_links pcl ON pcl.context_event_id = ce.id
+            INNER JOIN person_context_links pcl ON pcl.context_event_id = ce.id AND pcl.circle_id = ce.circle_id
             WHERE ce.circle_id = ? AND pcl.person_id IN ({person_placeholders})
             ORDER BY ce.date ASC, ce.created_at ASC
             """,
@@ -3109,6 +3234,7 @@ def get_subgraph_migration_geojson(
         if not root_exists:
             raise HTTPException(status_code=404, detail="Root person not found in circle")
 
+    enforce_rate_limit("read.heavy", actor_user_id)
     person_ids, _ = _compute_subgraph(
         circle_id=circle_id,
         root_person_id=root_person_id,
@@ -3122,6 +3248,8 @@ def get_subgraph_migration_geojson(
         return {"type": "FeatureCollection", "features": []}
 
     with get_conn() as conn:
+        _require_authenticated_user(conn, x_user_id, authorization)
+        _get_role(conn, circle_id, actor_user_id)
         person_placeholders = ",".join("?" for _ in person_ids)
         person_rows = fetch_all(
             conn,
@@ -3406,7 +3534,7 @@ def approve_change_request(
     reviewed_at = utc_now()
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        role = _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        role = _require_circle_action(conn, circle_id, actor_user_id, "edit_person")
         row = fetch_one(
             conn,
             "SELECT * FROM change_requests WHERE id = ? AND circle_id = ?",
@@ -3457,7 +3585,7 @@ def reject_change_request(
     reviewed_at = utc_now()
     with get_conn() as conn:
         actor_user_id = _require_authenticated_user(conn, x_user_id, authorization)
-        role = _require_circle_role(conn, circle_id, actor_user_id, {"owner", "editor"})
+        role = _require_circle_action(conn, circle_id, actor_user_id, "edit_person")
         row = fetch_one(
             conn,
             "SELECT * FROM change_requests WHERE id = ? AND circle_id = ?",

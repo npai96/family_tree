@@ -2,7 +2,12 @@ services:
   app:
     image: "${APP_IMAGE}"
     environment:
+      APP_ENV: "${APP_ENV:-production}"
+      ENABLE_REVIEW_AUTH: "${ENABLE_REVIEW_AUTH:-false}"
       ALLOW_LEGACY_X_USER_ID: "${ALLOW_LEGACY_X_USER_ID:-false}"
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-}"
+      ENABLE_METRICS_ENDPOINT: "${ENABLE_METRICS_ENDPOINT:-false}"
+      METRICS_BEARER_TOKEN: "${METRICS_BEARER_TOKEN:-}"
       DB_PATH: "${DB_PATH:-/data/mvp.db}"
       DATABASE_URL: "${DATABASE_URL:-}"
       POSTGRES_RUNTIME_ENABLED: "${POSTGRES_RUNTIME_ENABLED:-false}"

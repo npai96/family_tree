@@ -32,6 +32,8 @@ const { buildPersonSearchIndex, searchPersonIndex } = globalThis.FamilyTreePerso
   const LARGE_GRAPH_EDGE_THRESHOLD = 320;
   const GRAPH_FIRST_FRAME_BUDGET_MS = 1200;
   const LARGE_GRAPH_MIN_ZOOM = 0.005;
+  // A state marker, not a credential: the hosted session lives in an HttpOnly cookie.
+  const HOSTED_SESSION_MARKER = "hosted-cookie";
 
 class AppErrorBoundary extends React.Component {
   constructor(props) {
@@ -1588,6 +1590,7 @@ function App() {
   const [users, setUsers] = useState([]);
   const [activeUserId, setActiveUserId] = useState(localStorage.getItem("activeUserId") || "");
   const [authToken, setAuthToken] = useState(localStorage.getItem("authToken") || "");
+  const [csrfToken, setCsrfToken] = useState("");
   const [authState, setAuthState] = useState("checking");
   const [runtimeConfig, setRuntimeConfig] = useState(null);
   const [circles, setCircles] = useState([]);
@@ -1687,9 +1690,12 @@ function App() {
   selectedPersonIdRef.current = selectedPersonId;
 
   const headers = useMemo(() => {
+    if (authToken === HOSTED_SESSION_MARKER) {
+      return { "Content-Type": "application/json", "X-FT-CSRF": csrfToken };
+    }
     if (authToken) return { "Content-Type": "application/json", Authorization: `Bearer ${authToken}` };
     return { "Content-Type": "application/json" };
-  }, [authToken]);
+  }, [authToken, csrfToken]);
 
   const activeMediaTicket = mediaAccessTicket && mediaAccessTicket.circle_id === selectedCircle
     ? mediaAccessTicket.ticket
@@ -1862,9 +1868,10 @@ function App() {
   async function revokeTokenRemotely(token) {
     if (!token) return true;
     try {
-      const response = await fetch("/auth/logout", {
+      const hosted = token === HOSTED_SESSION_MARKER;
+      const response = await fetch(hosted ? "/auth/managed/logout" : "/auth/logout", {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: hosted ? { "X-FT-CSRF": csrfToken } : { Authorization: `Bearer ${token}` },
       });
       return response.ok || response.status === 401;
     } catch (_) {
@@ -1874,6 +1881,10 @@ function App() {
 
   async function signOutCurrentUser() {
     const revocationConfirmed = await revokeTokenRemotely(authToken);
+    if (authToken === HOSTED_SESSION_MARKER && !revocationConfirmed) {
+      setStatus("Could not sign out. Please retry.");
+      return;
+    }
     setToken("");
     setPersonJourneyOpen(false);
     setInviteCopied(false);
@@ -1884,6 +1895,24 @@ function App() {
     setStatus(revocationConfirmed
       ? "Signed out"
       : "Signed out locally. Server revocation could not be confirmed.");
+  }
+
+  async function signOutEverywhere() {
+    if (!managedAuthAvailable || authToken !== HOSTED_SESSION_MARKER) return;
+    const response = await fetch("/auth/managed/revoke-all", {
+      method: "POST",
+      headers: { "X-FT-CSRF": csrfToken },
+    });
+    if (!response.ok) {
+      setStatus("Could not sign out other devices. Please retry.");
+      return;
+    }
+    setToken("");
+    setActiveUser("");
+    setUsers([]);
+    setPersonJourneyOpen(false);
+    setInviteCopied(false);
+    setStatus("Signed out on all devices. Sign in again to continue.");
   }
 
   async function changeActiveUser(id) {
@@ -1901,7 +1930,8 @@ function App() {
     const nextToken = token || "";
     setAuthToken(nextToken);
     setAuthState(nextToken ? "signed_in" : "signed_out");
-    if (nextToken) localStorage.setItem("authToken", nextToken);
+    if (!nextToken) setCsrfToken("");
+    if (nextToken && nextToken !== HOSTED_SESSION_MARKER) localStorage.setItem("authToken", nextToken);
     else localStorage.removeItem("authToken");
   }
 
@@ -2196,18 +2226,33 @@ function App() {
     const config = await requestJson("/runtime-config");
     setRuntimeConfig(config);
     if (config.auth_mode === "supabase") {
-      const handoff = await requestJson("/auth/managed/session");
-      const token = handoff.access_token || authToken;
+      // Remove the V2 bearer from browser storage immediately. An already
+      // approved session can rotate into a cookie; older sessions require
+      // Google sign-in so the server can verify and record their email.
+      const legacyToken = localStorage.getItem("authToken") || "";
+      localStorage.removeItem("authToken");
+      let session = await requestJson("/auth/managed/session");
+      if (!session.signed_in && legacyToken) {
+        try {
+          session = await requestJson("/auth/managed/migrate", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${legacyToken}` },
+          });
+        } catch (_) {
+          setStatus("Your previous session could not be restored. Please sign in again.");
+        }
+      }
       if (new URLSearchParams(window.location.search).has("signin")) {
         setStatus("Sign-in did not complete. Please try again.");
         window.history.replaceState(null, "", "/");
       }
-      if (token) {
+      if (session.signed_in && session.csrf_token) {
         try {
-          const user = await requestJson("/auth/me", { headers: { Authorization: `Bearer ${token}` } });
+          const user = await requestJson("/auth/me");
           setUsers([user]);
           setActiveUser(user.id);
-          setToken(token);
+          setCsrfToken(session.csrf_token);
+          setToken(HOSTED_SESSION_MARKER);
           return;
         } catch (_) {
           setStatus("Your session could not be restored. Please sign in again.");
@@ -2565,10 +2610,23 @@ function App() {
     await loadCircles();
   }
 
+  async function revokeInvitation(invitationId) {
+    if (!canManageMembers || !selectedCircle) throw new Error("Only owners can revoke invitations");
+    await requestJson(`/circles/${selectedCircle}/invitations/${invitationId}/revoke`, {
+      method: "POST",
+      headers,
+    });
+    setStatus("Invitation revoked");
+    await loadManagementData(selectedCircle);
+  }
+
   async function transferOwnership(e) {
     e.preventDefault();
     if (!canManageMembers) throw new Error("Only owners can transfer ownership");
     const newOwnerUserId = e.target.new_owner_user_id.value;
+    const circleName = circles.find((circle) => circle.id === selectedCircle)?.name || "this circle";
+    const newOwnerName = e.target.new_owner_user_id.selectedOptions[0]?.textContent || "the selected member";
+    if (!window.confirm(`Transfer ownership of ${circleName} to ${newOwnerName}? You will become a viewer. Only the new owner can reverse this change.`)) return;
     await requestJson(`/circles/${selectedCircle}/ownership/transfer`, {
       method: "POST",
       headers,
@@ -2986,7 +3044,9 @@ function App() {
     try {
       const res = await fetch(`/circles/${circleId}/persons/${targetPersonId}/media`, {
         method: "POST",
-        headers: authToken
+        headers: authToken === HOSTED_SESSION_MARKER
+          ? { "X-FT-CSRF": csrfToken }
+          : authToken
           ? { Authorization: `Bearer ${authToken}` }
           : (activeUserId ? { "X-User-Id": activeUserId } : {}),
         body: form,
@@ -3361,6 +3421,10 @@ function App() {
               }, "Sign Out"),
             ]),
             managedAuthAvailable && isAuthenticated ? React.createElement("button", {
+              key: "signout-all", type: "button", className: "signout-all-button",
+              onClick: () => signOutEverywhere().catch(() => setStatus("Could not sign out other devices. Please retry.")),
+            }, "Sign out on all devices") : null,
+            managedAuthAvailable && isAuthenticated ? React.createElement("button", {
               key: "sample", type: "button", className: "sample-family-button", onClick: () => openSampleCircle().catch((x) => setStatus(x.message)),
             }, "Explore a sample family") : null,
             React.createElement("form", { key: "f2", onSubmit: (e) => createCircle(e).catch((x) => setStatus(x.message)) }, [
@@ -3429,6 +3493,9 @@ function App() {
               ]),
               React.createElement("button", { key: "b", type: "submit", disabled: !selectedCircle || !canManageMembers }, "Send Invite"),
             ]),
+            React.createElement("div", { className: "muted", key: "invite-help" }, managedAuthAvailable
+              ? "Ask a signed-in person for their invitation code. Invites expire after 7 days and the circle owner can revoke them."
+              : "Choose an existing test user. Invites expire after 7 days and the circle owner can revoke them."),
             React.createElement("form", { key: "xfer", onSubmit: (e) => transferOwnership(e).catch((x) => setStatus(x.message)) }, [
               React.createElement("select", { key: "n", name: "new_owner_user_id" },
                 members.filter((m) => m.user_id !== activeUserId).map((m) => {
@@ -3451,7 +3518,12 @@ function App() {
             ),
             React.createElement("div", { className: "muted", key: "ch" }, "Circle Invitations"),
             React.createElement("div", { className: "list", key: "cl" },
-              circleInvitations.map((inv) => React.createElement("div", { className: "item", key: inv.id }, `${inv.invited_user_id.slice(0, 8)} • ${inv.role} • ${inv.status}`))
+              circleInvitations.map((inv) => React.createElement("div", { className: "item", key: inv.id }, [
+                React.createElement("span", { key: "details" }, `${inv.invited_user_id.slice(0, 8)} • ${inv.role} • ${inv.expired_at ? "expired" : inv.revoked_at ? "revoked" : inv.status}${inv.status === "pending" && inv.expires_at ? ` • expires ${inv.expires_at.slice(0, 10)}` : ""}`),
+                inv.status === "pending" && canManageMembers
+                  ? React.createElement("button", { key: "revoke", type: "button", className: "ghost", onClick: () => revokeInvitation(inv.id).catch((x) => setStatus(x.message)) }, "Revoke")
+                  : null,
+              ]))
             ),
           ]),
           React.createElement(LazyDetails, { className: "card", key: "p", summary: "People & Relationships" }, () => [

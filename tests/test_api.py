@@ -1,6 +1,9 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 import hashlib
 from io import BytesIO
+import httpx
 import json
 import logging
 import os
@@ -8,7 +11,10 @@ from pathlib import Path
 import re
 import sqlite3
 import sys
+from threading import Barrier
 from typing import Optional
+from urllib.parse import urlsplit
+from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -21,11 +27,15 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import app.api.main as main
+from app.api import hosted
+from app.api.authorization import role_allows
 from app.api.db_config import load_database_config
-from app.api.db_runtime import INTEGRITY_ERRORS, _adapt_sql_placeholders, configure_database, execute
+from app.api.db_runtime import INTEGRITY_ERRORS, _adapt_sql_placeholders, configure_database, execute, fetch_one, get_conn
 from app.api.observability import REQUEST_METRICS, RequestMetrics, RequestObservabilityMiddleware
 from app.api.privacy import person_response_select_clause, redact_sensitive_json
-from app.api.security import load_runtime_security_config
+from app.api.privacy import contains_sensitive_person_fields
+from app.api.security import digest_token, load_runtime_security_config
+from app.api.security_abuse import RateLimitPolicy, enforce_rate_limit
 
 try:
     import psycopg
@@ -60,8 +70,31 @@ def build_client(tmp_path: Path) -> TestClient:
     return TestClient(main.app)
 
 
+def require_disposable_local_postgres(url: str) -> None:
+    """The Postgres suite drops public; allow only the bundled local fixture."""
+    parsed = urlsplit(url)
+    if (parsed.scheme not in {"postgres", "postgresql"}
+            or parsed.hostname not in {"127.0.0.1", "localhost"}
+            or parsed.port != 5433
+            or parsed.path != "/family_tree"
+            or parsed.username != "family_tree"
+            or parsed.query):
+        raise RuntimeError("Destructive Postgres tests require the local disposable family_tree database on port 5433")
+
+
+def test_destructive_postgres_suite_refuses_remote_or_wrong_database() -> None:
+    require_disposable_local_postgres("postgresql://family_tree:family_tree_dev@127.0.0.1:5433/family_tree")
+    with pytest.raises(RuntimeError, match="local disposable"):
+        require_disposable_local_postgres("postgresql://postgres:secret@pooler.supabase.com:5432/postgres")
+    with pytest.raises(RuntimeError, match="local disposable"):
+        require_disposable_local_postgres("postgresql://family_tree:secret@127.0.0.1:5432/family_tree")
+    with pytest.raises(RuntimeError, match="local disposable"):
+        require_disposable_local_postgres("postgresql://family_tree:secret@127.0.0.1:5433/family_tree?host=elsewhere")
+
+
 def reset_postgres_schema() -> None:
     assert psycopg is not None
+    require_disposable_local_postgres(POSTGRES_TEST_DATABASE_URL)
     with psycopg.connect(POSTGRES_TEST_DATABASE_URL, autocommit=True) as conn:
         with conn.cursor() as cur:
             cur.execute("DROP SCHEMA IF EXISTS public CASCADE;")
@@ -521,6 +554,154 @@ def test_health_postgres(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     assert response.json()["db_backend"] == "postgres"
     assert response.json()["environment"] == "test"
     assert response.json()["auth_mode"] == "review_unverified"
+
+
+@postgres_only
+def test_postgres_hosted_concurrent_first_login_and_durable_limits(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Two devices must survive a first V3 login while the old bearer is revoked."""
+    setup = build_postgres_client(monkeypatch, tmp_path)
+    user_id = create_user(setup, "Tester")
+    old_token = "old-hosted-session-" + str(uuid4())
+    now = datetime.now(timezone.utc)
+    with get_conn() as conn:
+        execute(conn, """INSERT INTO auth_sessions
+            (token, user_id, created_at, expires_at, auth_source)
+            VALUES (?, ?, ?, ?, 'supabase')""",
+            (digest_token(old_token), user_id, now.isoformat(),
+             (now + timedelta(days=14)).isoformat()))
+
+    monkeypatch.setattr(main, "REVIEW_AUTH_ENABLED", False)
+    monkeypatch.setattr(main, "ALLOW_LEGACY_X_USER_ID", False)
+    monkeypatch.setattr(hosted, "ENABLED", True)
+    monkeypatch.setattr(hosted, "SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setattr(hosted, "PUBLIC_APP_URL", "https://test.example")
+    monkeypatch.setattr(hosted, "APPROVED_TESTER_EMAILS", frozenset({"approved@example.test"}))
+    both_verified = Barrier(2, timeout=10)
+
+    def provider(method: str, path: str, **kwargs) -> httpx.Response:
+        if path.startswith("/auth/v1/token"):
+            return httpx.Response(200, json={"access_token": "verified-provider-token"})
+        both_verified.wait()
+        return httpx.Response(200, json={
+            "id": user_id, "email": "approved@example.test",
+            "email_confirmed_at": now.isoformat(),
+        })
+
+    monkeypatch.setattr(hosted, "provider_request", provider)
+    devices = [TestClient(main.app, base_url="https://test.example") for _ in range(2)]
+    for device in devices:
+        assert device.get("/auth/managed/start", follow_redirects=False).status_code == 303
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        callbacks = list(pool.map(
+            lambda device: device.get("/auth/managed/callback?code=provider-code", follow_redirects=False),
+            devices,
+        ))
+    assert [callback.headers["location"] for callback in callbacks] == ["/", "/"]
+    assert devices[0].cookies.get(hosted.SESSION_COOKIE) != devices[1].cookies.get(hosted.SESSION_COOKIE)
+    assert all(device.get("/auth/me").json()["id"] == user_id for device in devices)
+    assert devices[0].get("/auth/me", headers={"Authorization": f"Bearer {old_token}"}).status_code == 401
+
+    # Startup migration is additive and must preserve both account sessions.
+    main.init_db(main.MEDIA_DIR)
+    assert all(device.get("/auth/me").status_code == 200 for device in devices)
+    with get_conn() as conn:
+        assert fetch_one(conn, "SELECT revoked_at FROM auth_sessions WHERE token = ?",
+                         (digest_token(old_token),))["revoked_at"] is not None
+    limit = RateLimitPolicy(2, 60)
+    enforce_rate_limit("read.heavy", user_id, policy=limit, now=now)
+    enforce_rate_limit("read.heavy", user_id, policy=limit, now=now)
+    with pytest.raises(main.HTTPException) as error:
+        enforce_rate_limit("read.heavy", user_id, policy=limit, now=now)
+    assert error.value.status_code == 429
+
+
+@postgres_only
+def test_postgres_hosted_circle_boundary_from_login_through_revocation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A verified cookie identifies a user; only membership grants family access."""
+    build_postgres_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "REVIEW_AUTH_ENABLED", False)
+    monkeypatch.setattr(main, "ALLOW_LEGACY_X_USER_ID", False)
+    monkeypatch.setattr(hosted, "ENABLED", True)
+    monkeypatch.setattr(hosted, "SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setattr(hosted, "PUBLIC_APP_URL", "https://test.example")
+    identities = {
+        name: (str(uuid4()), f"{name}@example.test")
+        for name in ("owner", "viewer", "other")
+    }
+    monkeypatch.setattr(hosted, "APPROVED_TESTER_EMAILS",
+                        frozenset(email for _, email in identities.values()))
+
+    def provider(method: str, path: str, **kwargs) -> httpx.Response:
+        if path.startswith("/auth/v1/token"):
+            code = kwargs["json"]["auth_code"]
+            return httpx.Response(200, json={"access_token": f"provider-{code}"})
+        code = kwargs["headers"]["Authorization"].removeprefix("Bearer provider-")
+        user_id, email = identities[code]
+        return httpx.Response(200, json={
+            "id": user_id, "email": email,
+            "email_confirmed_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    monkeypatch.setattr(hosted, "provider_request", provider)
+    clients = {name: TestClient(main.app, base_url="https://test.example") for name in identities}
+    csrf = {}
+    for name, client in clients.items():
+        assert client.get("/auth/managed/start", follow_redirects=False).status_code == 303
+        assert client.get(f"/auth/managed/callback?code={name}", follow_redirects=False).headers["location"] == "/"
+        csrf[name] = client.get("/auth/managed/session").json()["csrf_token"]
+        assert csrf[name]
+    owner, viewer, other = (clients[name] for name in ("owner", "viewer", "other"))
+
+    circle = owner.post("/circles", headers={"X-FT-CSRF": csrf["owner"]},
+                        json={"name": "Fictional Family"})
+    assert circle.status_code == 200
+    circle_id = circle.json()["id"]
+    person = owner.post(f"/circles/{circle_id}/persons", headers={"X-FT-CSRF": csrf["owner"]},
+                        json={"full_name": "Fictional Grandparent", "medical_notes": "private note"})
+    assert person.status_code == 200
+    person_id = person.json()["id"]
+    assert viewer.get(f"/circles/{circle_id}/persons").status_code == 403
+    assert other.get(f"/circles/{circle_id}/persons").status_code == 403
+
+    invite = owner.post(f"/circles/{circle_id}/invitations",
+                        headers={"X-FT-CSRF": csrf["owner"]},
+                        json={"invited_user_id": identities["viewer"][0], "role": "viewer"})
+    assert invite.status_code == 200
+    invite_url = f"/invitations/{invite.json()['id']}/respond"
+    assert other.post(invite_url, headers={"X-FT-CSRF": csrf["other"]},
+                      json={"action": "accept"}).status_code == 403
+    assert viewer.post(invite_url, headers={"X-FT-CSRF": csrf["viewer"]},
+                       json={"action": "accept"}).status_code == 200
+    assert viewer.post(invite_url, headers={"X-FT-CSRF": csrf["viewer"]},
+                       json={"action": "accept"}).status_code == 409
+
+    visible = viewer.get(f"/circles/{circle_id}/persons")
+    assert visible.status_code == 200
+    assert visible.json()[0]["id"] == person_id
+    assert visible.json()[0]["medical_notes"] is None
+    assert viewer.patch(f"/circles/{circle_id}/persons/{person_id}",
+                        json={"occupation": "not allowed"}).status_code == 403  # CSRF
+    assert viewer.patch(f"/circles/{circle_id}/persons/{person_id}",
+                        headers={"X-FT-CSRF": csrf["viewer"]},
+                        json={"occupation": "not allowed"}).status_code == 403  # Role
+    assert owner.get(f"/circles/{circle_id}/persons").json()[0]["occupation"] is None
+
+    ticket = viewer.post(f"/circles/{circle_id}/access-tickets",
+                         headers={"X-FT-CSRF": csrf["viewer"]},
+                         json={"scope": "media"})
+    assert ticket.status_code == 200
+    assert viewer.post("/auth/managed/revoke-all",
+                       headers={"X-FT-CSRF": csrf["viewer"]}).status_code == 204
+    assert viewer.get(f"/circles/{circle_id}/persons").status_code == 401
+    with get_conn() as conn:
+        assert main._principal_from_circle_access_ticket(
+            conn, ticket.json()["ticket"], circle_id, "media") is None
+    assert owner.get(f"/circles/{circle_id}/persons").status_code == 200
+    assert other.get(f"/circles/{circle_id}/persons").status_code == 403
 
 
 def test_runtime_security_config_defaults_and_guards() -> None:
@@ -1402,8 +1583,18 @@ def test_postgres_auth_media_and_person_revision(monkeypatch: pytest.MonkeyPatch
 
     previews = client.get(f"/circles/{circle_id}/media-previews", headers=owner_headers)
     assert previews.status_code == 200
+    assert previews.json() == []  # A text attachment cannot be rendered as an image preview.
+
+    photo = client.post(
+        f"/circles/{circle_id}/persons/{person_id}/media",
+        files={"file": ("portrait.png", PNG_BYTES, "image/png")},
+        headers={"X-User-Id": editor_id},
+    )
+    assert photo.status_code == 200
+    previews = client.get(f"/circles/{circle_id}/media-previews", headers=owner_headers)
+    assert previews.status_code == 200
     assert previews.json()[0]["person_id"] == person_id
-    assert previews.json()[0]["asset_id"] == asset_id
+    assert previews.json()[0]["asset_id"] == photo.json()["id"]
 
     downloaded = client.get(
         f"/circles/{circle_id}/media/{asset_id}/download",
@@ -3347,3 +3538,242 @@ def test_invitation_transfer_and_audit_flow(tmp_path: Path) -> None:
         headers=owner_headers,
     )
     assert former_owner_add.status_code == 403
+
+
+def test_invitation_api_expiry_revocation_replay_and_role_floor(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    owner_id = create_user(client, "Fictional owner")
+    guest_id = create_user(client, "Fictional guest")
+    outsider_id = create_user(client, "Fictional outsider")
+    owner = auth_headers_for(client, owner_id)
+    guest = auth_headers_for(client, guest_id)
+    outsider = auth_headers_for(client, outsider_id)
+    circle_id = client.post("/circles", json={"name": "Test circle"}, headers=owner).json()["id"]
+
+    def invite(role: str) -> dict:
+        response = client.post(f"/circles/{circle_id}/invitations",
+                               json={"invited_user_id": guest_id, "role": role}, headers=owner)
+        assert response.status_code == 200
+        return response.json()
+
+    first = invite("viewer")
+    assert invite("viewer")["id"] == first["id"]  # retry is idempotent
+    assert client.post(f"/invitations/{first['id']}/respond", json={"action": "accept"}, headers=outsider).status_code == 403
+    revoked = client.post(f"/circles/{circle_id}/invitations/{first['id']}/revoke", headers=owner)
+    assert revoked.status_code == 200 and revoked.json()["revoked_at"]
+    assert client.post(f"/invitations/{first['id']}/respond", json={"action": "accept"}, headers=guest).status_code == 409
+    assert client.post(f"/circles/{circle_id}/invitations/{first['id']}/revoke", headers=outsider).status_code == 403
+
+    second = invite("editor")
+    assert second["id"] != first["id"]
+    accepted = client.post(f"/invitations/{second['id']}/respond", json={"action": "accept"}, headers=guest)
+    assert accepted.status_code == 200
+    assert client.post(f"/invitations/{second['id']}/respond", json={"action": "accept"}, headers=guest).status_code == 409
+    third = invite("viewer")
+    assert client.post(f"/invitations/{third['id']}/respond", json={"action": "accept"}, headers=guest).status_code == 200
+    members = client.get(f"/circles/{circle_id}/members", headers=owner).json()
+    assert next(row for row in members if row["user_id"] == guest_id)["role"] == "editor"
+
+    fourth = invite("viewer")
+    with sqlite3.connect(tmp_path / "test.db") as conn:
+        conn.execute("UPDATE circle_invitations SET expires_at = ? WHERE id = ?",
+                     ("2020-01-01T00:00:00+00:00", fourth["id"]))
+    assert client.post(f"/invitations/{fourth['id']}/respond", json={"action": "accept"}, headers=guest).status_code == 410
+    history = client.get(f"/circles/{circle_id}/invitations", headers=owner).json()
+    assert next(row for row in history if row["id"] == fourth["id"])["expired_at"]
+
+
+def test_invitation_name_resolution_rejects_ambiguous_accounts(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    owner_id = create_user(client, "Owner")
+    create_user(client, "Same name")
+    create_user(client, "Same name")
+    owner = auth_headers_for(client, owner_id)
+    circle_id = client.post("/circles", json={"name": "Test circle"}, headers=owner).json()["id"]
+    response = client.post(f"/circles/{circle_id}/invitations",
+                           json={"invited_display_name": "Same name", "role": "viewer"}, headers=owner)
+    assert response.status_code == 409
+
+
+def test_upload_total_quota_and_heavy_read_rate_limit_through_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.api import security_abuse
+
+    client = build_client(tmp_path)
+    owner_id = create_user(client, "Fictional owner")
+    owner = auth_headers_for(client, owner_id)
+    circle_id = client.post("/circles", json={"name": "Test circle"}, headers=owner).json()["id"]
+    person_id = client.post(f"/circles/{circle_id}/persons",
+                            json={"full_name": "Fictional person"}, headers=owner).json()["id"]
+    original_capacity = security_abuse.require_storage_capacity
+
+    def tiny_capacity(conn, *, circle_id: str, account_id: str, additional_bytes: int) -> None:
+        original_capacity(conn, circle_id=circle_id, account_id=account_id,
+                          additional_bytes=additional_bytes,
+                          circle_limit=len(PNG_BYTES) + 1, account_limit=len(PNG_BYTES) + 1)
+
+    monkeypatch.setattr(main, "require_storage_capacity", tiny_capacity)
+    path = f"/circles/{circle_id}/persons/{person_id}/media"
+    assert client.post(path, files={"file": ("first.png", PNG_BYTES, "image/png")}, headers=owner).status_code == 200
+    excess = client.post(path, files={"file": ("second.png", PNG_BYTES, "image/png")}, headers=owner)
+    assert excess.status_code == 413
+    assert len(client.get(path, headers=owner).json()) == 1
+
+    monkeypatch.setitem(security_abuse.RATE_LIMITS, "read.heavy", security_abuse.RateLimitPolicy(1, 60))
+    params = {"root_person_id": person_id, "direction": "descendants"}
+    graph_url = f"/circles/{circle_id}/graph/subgraph"
+    assert client.get(graph_url, params=params, headers=owner).status_code == 200
+    throttled = client.get(graph_url, params=params, headers=owner)
+    assert throttled.status_code == 429 and int(throttled.headers["Retry-After"]) >= 1
+
+
+def test_circle_permission_vocabulary_fails_closed() -> None:
+    assert role_allows("viewer", "view_circle")
+    assert role_allows("viewer", "access_media")
+    assert not role_allows("viewer", "edit_person")
+    assert not role_allows("viewer", "view_medical_notes")
+    assert role_allows("editor", "edit_person")
+    assert not role_allows("editor", "manage_members")
+    assert role_allows("owner", "manage_members")
+    assert not role_allows("administrator", "view_circle")
+    assert not role_allows("owner", "unknown_action")
+    assert contains_sensitive_person_fields({"proposal": [{"medical_notes": "fictional secret"}]})
+
+
+def test_two_family_object_ids_and_role_boundaries(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    owner_a = create_user(client, "Family A owner")
+    owner_b = create_user(client, "Family B owner")
+    viewer_a = create_user(client, "Family A viewer")
+    headers_a = auth_headers_for(client, owner_a)
+    headers_b = auth_headers_for(client, owner_b)
+    viewer_headers = auth_headers_for(client, viewer_a)
+    circle_a = client.post("/circles", json={"name": "Family A"}, headers=headers_a).json()["id"]
+    circle_b = client.post("/circles", json={"name": "Family B"}, headers=headers_b).json()["id"]
+    assert client.post(
+        f"/circles/{circle_a}/members",
+        json={"user_id": viewer_a, "role": "viewer"},
+        headers=headers_a,
+    ).status_code == 200
+    person_a = client.post(
+        f"/circles/{circle_a}/persons",
+        json={"full_name": "Fictional A", "medical_notes": "private A"},
+        headers=headers_a,
+    ).json()["id"]
+    person_b = client.post(
+        f"/circles/{circle_b}/persons",
+        json={"full_name": "Fictional B", "medical_notes": "private B"},
+        headers=headers_b,
+    ).json()["id"]
+    media_b = client.post(
+        f"/circles/{circle_b}/persons/{person_b}/media",
+        files={"file": ("fictional.png", PNG_BYTES, "image/png")},
+        headers=headers_b,
+    ).json()["id"]
+
+    # A valid session for another family is not authorization to read B.
+    for path, params in (
+        (f"/circles/{circle_b}/members", None),
+        (f"/circles/{circle_b}/persons", None),
+        (f"/circles/{circle_b}/persons/{person_b}/revisions", None),
+        (f"/circles/{circle_b}/persons/{person_b}/media", None),
+        (f"/circles/{circle_b}/media/{media_b}/download", None),
+        (f"/circles/{circle_b}/audit-logs", None),
+        (f"/circles/{circle_b}/graph/subgraph", {"root_person_id": person_b, "direction": "descendants"}),
+    ):
+        response = client.get(path, params=params, headers=headers_a)
+        assert response.status_code == 403, path
+        assert "private B" not in response.text
+
+    # Swapping only a nested ID under A's valid circle must not find B's data.
+    for path in (
+        f"/circles/{circle_a}/persons/{person_b}/revisions",
+        f"/circles/{circle_a}/persons/{person_b}/media",
+        f"/circles/{circle_a}/media/{media_b}/download",
+    ):
+        assert client.get(path, headers=headers_a).status_code == 404, path
+    assert client.patch(
+        f"/circles/{circle_a}/persons/{person_b}",
+        json={"occupation": "injected"}, headers=headers_a,
+    ).status_code == 404
+    assert client.get(f"/circles/{circle_b}/persons", headers=headers_b).json()[0]["occupation"] is None
+
+    viewer_person = client.get(f"/circles/{circle_a}/persons", headers=viewer_headers)
+    assert viewer_person.status_code == 200
+    assert viewer_person.json()[0]["id"] == person_a
+    assert viewer_person.json()[0]["medical_notes"] is None
+    assert client.post(
+        f"/circles/{circle_a}/persons", json={"full_name": "Denied"}, headers=viewer_headers,
+    ).status_code == 403
+    assert client.patch(
+        f"/circles/{circle_a}/persons/{person_a}", json={"medical_notes": "Denied"},
+        headers=viewer_headers,
+    ).status_code == 403
+    assert client.post(
+        f"/circles/{circle_a}/change-requests",
+        json={"entity_type": "person", "entity_id": person_a,
+              "proposed_patch_json": {"nested": {"medical_notes": "Denied"}}},
+        headers=viewer_headers,
+    ).status_code == 403
+
+
+def test_open_realtime_connection_stops_after_membership_or_session_revocation(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    owner_id = create_user(client, "Realtime owner")
+    editor_id = create_user(client, "Realtime editor")
+    viewer_id = create_user(client, "Realtime viewer")
+    owner_headers = auth_headers_for(client, owner_id)
+    editor_headers = auth_headers_for(client, editor_id)
+    viewer_headers = auth_headers_for(client, viewer_id)
+    circle_id = client.post("/circles", json={"name": "Realtime Family"}, headers=owner_headers).json()["id"]
+    for user_id, role in ((editor_id, "editor"), (viewer_id, "viewer")):
+        assert client.post(
+            f"/circles/{circle_id}/members", json={"user_id": user_id, "role": role},
+            headers=owner_headers,
+        ).status_code == 200
+    person_id = client.post(
+        f"/circles/{circle_id}/persons", json={"full_name": "Fictional Person"},
+        headers=owner_headers,
+    ).json()["id"]
+    thread_id = client.post(
+        f"/circles/{circle_id}/threads",
+        json={"entity_type": "person", "entity_id": person_id},
+        headers=owner_headers,
+    ).json()["id"]
+
+    viewer_ticket = client.post(
+        f"/circles/{circle_id}/access-tickets", json={"scope": "websocket"},
+        headers=viewer_headers,
+    ).json()["ticket"]
+    with client.websocket_connect(
+        f"/ws/circles/{circle_id}",
+        subprotocols=["family-tree.v1", f"family-tree-ticket.{viewer_ticket}"],
+    ) as ws:
+        assert ws.receive_json()["state"] == "joined"
+        with main.get_conn() as conn:
+            execute(
+                conn, "DELETE FROM circle_memberships WHERE circle_id = ? AND user_id = ?",
+                (circle_id, viewer_id),
+            )
+        assert client.post(
+            f"/circles/{circle_id}/threads/{thread_id}/messages",
+            json={"content": "after membership revocation"}, headers=editor_headers,
+        ).status_code == 200
+        with pytest.raises(WebSocketDisconnect):
+            ws.receive_json()
+
+    owner_ticket = client.post(
+        f"/circles/{circle_id}/access-tickets", json={"scope": "websocket"},
+        headers=owner_headers,
+    ).json()["ticket"]
+    with client.websocket_connect(
+        f"/ws/circles/{circle_id}",
+        subprotocols=["family-tree.v1", f"family-tree-ticket.{owner_ticket}"],
+    ) as ws:
+        assert ws.receive_json()["state"] == "joined"
+        assert client.post("/auth/logout", headers=owner_headers).status_code == 204
+        assert client.post(
+            f"/circles/{circle_id}/threads/{thread_id}/messages",
+            json={"content": "after session revocation"}, headers=editor_headers,
+        ).status_code == 200
+        with pytest.raises(WebSocketDisconnect):
+            ws.receive_json()

@@ -8,6 +8,8 @@ Use the [free hosted setup guide](docs/DEPLOY_FREE_DEMO.md) and `render.yaml`: R
 
 The hosted profile disables the unverified user picker, isolates review sessions from verified sessions, and enables RLS with browser database access revoked. Existing AWS deployment instructions below are an alternative path and are not needed for this demo. Moving the app does not stop billing for AWS resources that already exist.
 
+**V3 security work is in this repository, not the hosted release.** It adds a server-enforced approved-tester list, cookie/CSRF sessions, circle-action checks, expiring/revocable invitations, and database-backed abuse limits. Start with [the implementation report](docs/security-implementation-report.md), [decision records](docs/security-decisions.md), and [threat model](docs/security-threat-model.md). A Supabase migration check and Render/Supabase smoke test remain release gates; the documentation does not claim that these controls are live.
+
 ## Increment Plan
 1. Increment 1: backend foundation + minimal React UI + graph APIs + tests.
 2. Increment 2 (current): user identity headers, role-based circle permissions, and change requests workflow.

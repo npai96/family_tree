@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
+from app.api.authorization import role_allows
+
 
 SENSITIVE_PERSON_FIELDS = frozenset({"medical_notes"})
-SENSITIVE_PERSON_ROLES = frozenset({"owner", "editor"})
 PERSON_RESPONSE_FIELDS = (
     "id",
     "circle_id",
@@ -26,11 +27,18 @@ PERSON_RESPONSE_FIELDS = (
 
 
 def can_read_sensitive_person_fields(role: str) -> bool:
-    return role in SENSITIVE_PERSON_ROLES
+    return role_allows(role, "view_medical_notes")
 
 
-def contains_sensitive_person_fields(value: dict[str, Any]) -> bool:
-    return bool(SENSITIVE_PERSON_FIELDS.intersection(value))
+def contains_sensitive_person_fields(value: Any) -> bool:
+    """Check nested proposals too, so a viewer cannot hide a protected field."""
+    if isinstance(value, dict):
+        return bool(SENSITIVE_PERSON_FIELDS.intersection(value)) or any(
+            contains_sensitive_person_fields(item) for item in value.values()
+        )
+    if isinstance(value, list):
+        return any(contains_sensitive_person_fields(item) for item in value)
+    return False
 
 
 def person_response_select_clause(role: str, table_alias: Optional[str] = None) -> str:
