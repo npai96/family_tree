@@ -129,6 +129,7 @@ def test_oauth_pkce_callback_sets_http_only_session_cookie(client, monkeypatch):
     monkeypatch.setattr(hosted, 'provider_request', provider)
     start = client.get('/auth/managed/start', follow_redirects=False)
     assert 'code_challenge_method=s256' in start.headers['location']
+    assert 'prompt=select_account' in start.headers['location']
     assert 'HttpOnly' in start.headers['set-cookie'] and 'Secure' in start.headers['set-cookie']
     callback = client.get('/auth/managed/callback?code=provider-code', follow_redirects=False)
     assert callback.headers['location'] == '/'
@@ -168,6 +169,33 @@ def test_unapproved_google_identity_never_receives_app_session(client, monkeypat
     assert hosted.SESSION_COOKIE not in client.cookies
     with get_conn() as conn:
         assert fetch_one(conn, 'SELECT id FROM users WHERE id = ?', (user_id,)) is None
+
+
+def test_rejected_google_login_does_not_block_next_approved_login(client, monkeypatch):
+    approved_user_id = str(uuid4())
+
+    def provider(method, path, **kwargs):
+        if path.startswith('/auth/v1/token'):
+            code = kwargs['json']['auth_code']
+            return httpx.Response(200, json={'access_token': code})
+        token = kwargs['headers']['Authorization'].split(' ', 1)[1]
+        return httpx.Response(200, json={
+            'id': approved_user_id if token == 'approved' else str(uuid4()),
+            'email': 'approved@example.test' if token == 'approved' else 'not-approved@example.test',
+            'email_confirmed_at': '2026-09-18',
+        })
+
+    monkeypatch.setattr(hosted, 'provider_request', provider)
+    assert client.get('/auth/managed/start', follow_redirects=False).status_code == 303
+    rejected = client.get('/auth/managed/callback?code=unapproved', follow_redirects=False)
+    assert rejected.headers['location'] == '/?signin=failed'
+    assert client.get('/auth/managed/session').json()['signed_in'] is False
+
+    assert client.get('/auth/managed/start', follow_redirects=False).status_code == 303
+    accepted = client.get('/auth/managed/callback?code=approved', follow_redirects=False)
+    assert accepted.headers['location'] == '/'
+    assert client.get('/auth/managed/session').json()['signed_in'] is True
+    assert client.get('/auth/me').json()['id'] == approved_user_id
 
 
 def test_first_v3_login_keeps_preexisting_v2_bearer_revoked(client, monkeypatch):

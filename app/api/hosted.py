@@ -90,7 +90,8 @@ def start_login(request: Request):
     verifier = secrets.token_urlsafe(48)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     query = urlencode({"provider": "google", "redirect_to": PUBLIC_APP_URL + "/auth/managed/callback",
-                       "code_challenge": challenge, "code_challenge_method": "s256"})
+                       "code_challenge": challenge, "code_challenge_method": "s256",
+                       "prompt": "select_account"})
     response = RedirectResponse(SUPABASE_URL + "/auth/v1/authorize?" + query, status_code=303)
     response.set_cookie("ft_oauth_verifier", verifier, max_age=600, secure=True, httponly=True,
                         samesite="lax", path="/auth/managed")
