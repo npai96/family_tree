@@ -841,18 +841,30 @@ form button.graph-render-button {
 }
 .journey-row {
   display: grid;
-  grid-template-columns: 1fr 40px 1fr;
+  grid-template-columns: minmax(0, 1fr) 40px minmax(0, 1fr);
   gap: 10px;
   align-items: center;
 }
+.journey-person {
+  grid-column: 1;
+  grid-row: 1;
+}
 .journey-row.flip .journey-person {
   grid-column: 3;
+}
+.journey-context {
+  grid-column: 3;
+  grid-row: 1;
+  color: #6a7888;
+  font-size: 12px;
 }
 .journey-row.flip .journey-context {
   grid-column: 1;
   text-align: right;
 }
 .journey-center {
+  grid-column: 2;
+  grid-row: 1;
   display: flex;
   justify-content: center;
 }
@@ -912,10 +924,6 @@ form button.graph-render-button {
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.04em;
-}
-.journey-context {
-  color: #6a7888;
-  font-size: 12px;
 }
 .journey-context-label {
   font-size: 10px;
@@ -1084,12 +1092,14 @@ form button.graph-render-button {
     max-width: 84vw;
   }
   .lineage-journey-rail::before { left: 16px; transform: none; }
-  .journey-row { grid-template-columns: 32px 1fr; }
+  .journey-row { grid-template-columns: 32px minmax(0, 1fr); }
   .journey-person, .journey-context, .journey-row.flip .journey-person, .journey-row.flip .journey-context {
     grid-column: 2;
     text-align: left;
   }
-  .journey-center { grid-column: 1; }
+  .journey-person, .journey-row.flip .journey-person { grid-row: 1; }
+  .journey-context, .journey-row.flip .journey-context { grid-row: 2; }
+  .journey-center { grid-column: 1; grid-row: 1; }
   .time-aligned-shell { grid-template-columns: 1fr; }
 }
 @media (max-width: 620px) {
