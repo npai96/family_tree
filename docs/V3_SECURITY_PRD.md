@@ -1,6 +1,6 @@
 # Viraasat V3 — Security and privacy layer (working PRD)
 
-**Status:** Working PRD. The V3 application controls and local tests are in the repository; disposable PostgreSQL checks pass, while real Supabase/Google verification and a hosted release are pending. Living-person consent, tested restoration, and per-circle database RLS remain separate design gates. **Audience:** a small approved-test cohort today; expansion to real family records requires a separate release decision. This document incorporates the portfolio-evidence requirements supplied for V3. It does not certify the hosted deployment.
+**Status:** Working PRD. V3 is deployed for a small approved-test cohort; the owner has reported successful hosted Google sign-in, role-limited viewing, session revocation, and private-media ticket denial after sign-out. Disposable local PostgreSQL checks pass. A disposable Supabase migration rehearsal, independent hosted API probe, living-person consent, tested restoration, and per-circle database RLS remain separate evidence or design gates. **Audience:** a small approved-test cohort today; expansion to real family records requires a separate release decision. This document incorporates the portfolio-evidence requirements supplied for V3. It does not certify the hosted deployment.
 
 ## Product problem and outcome
 
@@ -10,7 +10,7 @@ Viraasat stores family relationships, stories, medical notes, and photos. A vali
 
 ## Verified V2 baseline
 
-- Supabase Google sign-in verifies identity; FastAPI issues a hashed-at-rest, 14-day app session. The browser currently holds its bearer token in localStorage. Provider/account revocation does not immediately invalidate an existing app session. See `app/api/hosted.py`, `app/api/security.py`, `app/web/app.js`, and `docs/DEPLOY_FREE_DEMO.md`.
+- In V2, Supabase Google sign-in verified identity and FastAPI issued a hashed-at-rest, 14-day app session whose bearer token the browser held in localStorage. Provider/account revocation did not immediately invalidate an existing app session. V3 now uses an HTTP-only app cookie and account-wide app-session revocation; provider revocation still is not continuously synchronized. See `app/api/hosted.py`, `app/api/security.py`, `app/web/app.js`, and `docs/DEPLOY_FREE_DEMO.md`.
 - FastAPI checks circle membership and owner/editor/viewer roles. Viewers cannot write; medical notes are omitted from viewer responses, including relevant history and audit payloads. See `app/api/main.py` and `app/api/privacy.py`.
 - The hosted media bucket is private. The API validates JPEG/PNG content and file size, and checks membership before serving media or issuing a scoped, session-bound media ticket. See `app/api/main.py` and `app/api/hosted.py`.
 - Supabase tables have RLS enabled and browser-facing `anon`/`authenticated` grants revoked. **The backend connects through the table-owning database role, so current circle isolation depends on FastAPI checks; RLS is not a second per-circle enforcement layer for those requests.** See `db/supabase_privacy.sql`, `app/api/db_runtime.py`, and [Supabase's RLS guidance](https://supabase.com/docs/guides/database/postgres/row-level-security).

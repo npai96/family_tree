@@ -1,10 +1,10 @@
 # Viraasat security decisions
 
-**Status:** V3 implemented and locally tested; production Postgres and Render verification are pending. These decisions describe the working tree, not a shipped release. The [route matrix](security-route-matrix.md) and [threat model](security-threat-model.md) track coverage and residual risks.
+**Status:** V3 is deployed to a small approved-tester cohort. Local SQLite and disposable PostgreSQL tests passed; the owner reported hosted sign-in, viewer privacy, cross-browser session revocation, and private-media ticket denial after sign-out. The exact production configuration and untested controls are distinguished in the [implementation report](security-implementation-report.md). The [route matrix](security-route-matrix.md) and [threat model](security-threat-model.md) track coverage and residual risks.
 
 ## SEC-001 — Keep authorization on the server
 
-**Status:** V3 policy code and synthetic tests pass locally; release is pending.
+**Status:** V3 policy code and synthetic tests pass locally; owner-reported hosted viewer UI checks pass. A direct hosted forged-request probe remains unperformed.
 
 - **Threat:** A signed-in member changes a circle, person, relationship, or media ID to reach another family's record, or a viewer sends an editor request directly.
 - **Decision:** Authenticate the caller and check circle membership and the required role for each operation in FastAPI. Keep browser affordances as a reflection of the server policy, never as its enforcement.
@@ -12,25 +12,25 @@
 - **Alternatives:** Trust hidden/disabled UI controls (insufficient because requests can be forged); put all authorization in database policies (possible only after changing the privileged runtime role and testing real Postgres).
 - **Trade-off:** Every API and realtime path must apply the right policy. A missed check remains a risk until route inventory and two-family tests cover it.
 - **Implementation:** `app/api/authorization.py` defines named actions and denies unknown roles/actions; `_require_circle_action` in `app/api/main.py` applies them after membership lookup. `app/api/privacy.py` handles sensitive-field redaction. Media/person joins are circle-scoped and open WebSockets revalidate session/membership before broadcasts.
-- **Verification:** `tests/test_api.py` contains `test_two_family_object_ids_and_role_boundaries` and `test_open_realtime_connection_stops_after_membership_or_session_revocation` with fictional records. These pass in the local SQLite suite; hosted evidence is pending.
+- **Verification:** `tests/test_api.py` contains `test_two_family_object_ids_and_role_boundaries` and `test_open_realtime_connection_stops_after_membership_or_session_revocation` with fictional records. A focused hosted-cookie test also sends a viewer PATCH with valid CSRF and confirms 403 with no profile change. The owner observed read-only viewer fields and a medical-note privacy notice in the hosted app; direct hosted API denial was not probed.
 - **Residual risk:** A valid account or device compromise can still expose the circles it is authorized to see; role permission is not consent from every person represented in the tree.
 
 ## SEC-002 — Use revocable app sessions and move hosted sessions into secure cookies
 
-**Status:** Hashing, expiry, and per-session logout are existing behavior. V3 hosted cookie/CSRF protection and account-wide revocation pass local tests; hosted verification is pending.
+**Status:** Hashing, expiry, and per-session logout are existing behavior. V3 hosted cookie/CSRF protection and account-wide revocation pass local tests; the owner observed two-browser revocation in the hosted app.
 
 - **Threat:** A copied, expired, or revoked token continues to access private records.
 - **Decision:** Use high-entropy app sessions, store only a SHA-256 lookup digest in Postgres, check expiry/revocation at access, and bind media/WebSocket tickets to the parent session. V3 puts the hosted app session in an `HttpOnly`, `Secure`, `SameSite` cookie, requires a CSRF header for state-changing browser requests, and adds account-wide invalidation for loss of account access. Review/dev mode retains its explicit bearer contract.
 - **Why:** Server-side session rows allow immediate app-level revocation without needing to wait for the original fourteen-day lifetime.
 - **Alternatives:** A stateless long-lived JWT (harder to revoke immediately); retain hosted localStorage bearer tokens (simpler but exposed to JavaScript in the app origin).
 - **Trade-off:** Cookies reduce token exposure to JavaScript but are automatically sent by browsers, so every state-changing hosted request needs CSRF protection. Media and WebSocket access require a careful migration. A logout revokes one session; provider-side revocation alone does not automatically revoke every app session.
-- **Implementation:** V2 session contract in `app/api/main.py`, `app/api/hosted.py`, `app/api/security.py`, `app/web/app.js`, and `auth_sessions` in `app/api/db_runtime.py` / `db/runtime_postgres.sql`. V3 working tree sets `__Host-ft_session` in `app/api/hosted.py`, checks an `X-FT-CSRF` header in `app/api/cookie_auth.py`, and migrates old browser bearer sessions by rotation; `app/web/app.js` uses cookie credentials. Account-wide revocation is exposed through hosted API and operator script. Local integration passes; hosted verification is pending.
-- **Verification:** Existing token expiry, hashed storage, logout, and ticket revocation tests in `tests/test_api.py`; `tests/test_hosted.py` covers cookie flags, CSRF denial, migration rotation, logout, account-wide revocation, and child-ticket invalidation. Local tests pass; browser/hosted smoke is pending.
+- **Implementation:** V2 session contract in `app/api/main.py`, `app/api/hosted.py`, `app/api/security.py`, `app/web/app.js`, and `auth_sessions` in `app/api/db_runtime.py` / `db/runtime_postgres.sql`. V3 sets `__Host-ft_session` in `app/api/hosted.py`, checks an `X-FT-CSRF` header in `app/api/cookie_auth.py`, and migrates old browser bearer sessions by rotation; `app/web/app.js` uses cookie credentials. Account-wide revocation is exposed through hosted API and operator script.
+- **Verification:** Existing token expiry, hashed storage, logout, and ticket revocation tests in `tests/test_api.py`; `tests/test_hosted.py` covers cookie flags, CSRF denial, migration rotation, logout, account-wide revocation, and child-ticket invalidation. Local tests pass; the owner observed Safari and Incognito Chrome both lose access after revoke-all. Cookie flags/CSRF rejection were not independently inspected in production.
 - **Residual risk:** Compromised client devices and injected JavaScript can still issue same-origin requests while a hosted session is active, even if they cannot read an `HttpOnly` token. The app does not continuously recheck the Google account's status.
 
 ## SEC-003 — Keep media private behind the application
 
-**Status:** Existing private-media architecture; V3 local authorization and quota tests pass. Hosted provider verification is pending.
+**Status:** Existing private-media architecture; V3 local authorization and quota tests pass. The owner observed a copied private-image URL fail after hosted sign-out.
 
 - **Threat:** A guessed or shared object path exposes family media, or an image URL remains usable after access is revoked.
 - **Decision:** Keep the Supabase Storage bucket private. Check circle membership in FastAPI before serving an object through the API, using either the app bearer session or a short-lived, scoped, parent-session-bound media ticket.
@@ -38,7 +38,7 @@
 - **Alternatives:** Public bucket with opaque names (rejected: obscurity is not authorization); short-lived Supabase signed URLs (less API bandwidth, but a previously issued URL remains usable until expiry and cannot be revoked on app sign-out).
 - **Trade-off:** Proxying image bytes uses Render bandwidth and adds latency; free-tier egress and per-circle storage must be monitored and bounded.
 - **Implementation:** `app/api/main.py` media routes and `app/api/hosted.py` server-only Storage calls. This implementation does **not** issue Supabase signed URLs.
-- **Verification:** Media-ticket expiry, wrong-circle, scope, parent-session-revocation, and API quota tests pass locally. Real private-bucket setup is user-reported in `docs/DEPLOY_FREE_DEMO.md`; V3 hosted provider check remains pending.
+- **Verification:** Media-ticket expiry, wrong-circle, scope, parent-session-revocation, and API quota tests pass locally. Real private-bucket setup and a copied image link returning `Missing or invalid media access ticket` after sign-out are user-reported in `docs/DEPLOY_FREE_DEMO.md`; provider configuration has not been independently audited.
 - **Residual risk:** Authorized people can download, save, or photograph media. Private storage is not a promise that recipients cannot redistribute it.
 
 ## SEC-004 — Treat database RLS as a separate design gate
@@ -56,7 +56,7 @@
 
 ## SEC-005 — Bind invitations to an identity and lifecycle
 
-**Status:** Recipient binding and one-time status checks existed; V3 expiry, explicit revocation, idempotent creation, and atomic replay handling pass local helper and route tests. Release is pending.
+**Status:** Recipient binding and one-time status checks existed; V3 expiry, explicit revocation, idempotent creation, and atomic replay handling pass local helper and route tests. Hosted expiry/revocation behavior remains untested.
 
 - **Threat:** An invitation is accepted by the wrong account, reused, kept indefinitely, or used to gain a stronger role than intended.
 - **Decision:** Resolve the recipient to an account ID at creation, permit only that account to respond, and constrain the granted role to the invitation. V3 adds explicit expiry/revocation and atomic replay handling with owner-visible history.
@@ -69,7 +69,7 @@
 
 ## SEC-006 — Bound free-tier abuse with shared state
 
-**Status:** Existing per-file upload size/type checks; V3 durable request counters and total storage quotas pass local helper and route tests. Hosted verification is pending.
+**Status:** Existing per-file upload size/type checks; V3 durable request counters and total storage quotas pass local helper and route tests. Hosted rate/quota stress behavior remains untested.
 
 - **Threat:** Repeated invitation, login, read, or upload requests exhaust the free app/database/storage allowance.
 - **Decision:** Keep content-sniffed, bounded uploads and add limits that are enforced by durable shared database state where they need to survive Render restarts. Limit aggregate media storage per circle and uploader as well as individual file size. Proposed V3 defaults are 250 MiB per circle, 100 MiB per uploader, 30 uploads/day, 20 invitations/day, and 240 heavy reads/minute; confirm the final values and responses in integrated tests before publication.
@@ -108,7 +108,7 @@
 
 ## SEC-009 — Enforce the approved tester cohort in the application
 
-**Status:** V3 allowlist and local regression tests pass; hosted verification is pending.
+**Status:** V3 allowlist and local regression tests pass; the owner observed unlisted or mismatched addresses denied and a corrected approved viewer address accepted after Render redeploy.
 
 - **Threat:** A valid Google account reaches the demo even though the owner has not approved it, or an older app session regains access after the V3 migration.
 - **Decision:** Require a configured list of verified Google email addresses at hosted startup. Check the verified email at the OAuth callback and check recorded approval against the current list on every app session or derived ticket. On an account's first V3 login, revoke its pre-approval app sessions.
@@ -116,5 +116,5 @@
 - **Alternatives:** Rely on Google test-user settings alone (outside the API's control); open registration (requires broader abuse, consent, and operational work); manually approve every login (slows testing).
 - **Trade-off:** The owner must keep the Render environment list current, and changing it requires a restart. Existing V2 testers must log in again. Removing an address blocks access while it is absent; revoke app sessions as well for permanent removal.
 - **Implementation:** `app/api/hosted.py` verifies the provider email and stores it in `approved_accounts`; `app/api/main.py` checks approval for sessions and realtime tickets. Hosted configuration fails closed when the list is missing.
-- **Verification:** `tests/test_hosted.py` covers unlisted Google identity denial, removal blocking existing session/ticket access, startup configuration, and first-login revocation of V2 sessions. Local provider mocks only; Render/Supabase validation remains pending.
+- **Verification:** `tests/test_hosted.py` covers unlisted Google identity denial, removal blocking existing session/ticket access, startup configuration, and first-login revocation of V2 sessions. The owner observed hosted allowlist rejection and corrected viewer sign-in; removal of an already active tester was not tried live.
 - **Residual risk:** Operator access to Render/Supabase is high trust. An approved tester may share content they can legitimately see, and the current application does not continuously poll Google for account revocation.

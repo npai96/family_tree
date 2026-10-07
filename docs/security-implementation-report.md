@@ -1,19 +1,19 @@
 # Viraasat V3 security implementation report
 
-**Status:** V3 controls implemented and locally verified; **not deployed or certified**. The V2-to-V3 migration and hosted-session path passed tests on disposable local PostgreSQL. Real Supabase/Google behavior and a controlled Render smoke test remain release gates. Record the deployed commit and hosted evidence before adapting this for a public portfolio.
+**Status:** V3 is deployed for a small approved-tester demo, with user-reported hosted checks on 2026-10-07; **it is not a security certification for real family records**. The V2-to-V3 migration and hosted-session path passed tests on disposable local PostgreSQL. The exact Render source commit and production configuration have not been independently audited. A disposable Supabase migration rehearsal and complete Auth/Storage backup-and-restore drill remain unperformed.
 
 | Evidence item | Status |
 |---|---|
-| V3 implementation commit | Recorded in Git history; hosted deployment pending |
-| V3 API and frontend test command/result | `RUN_POSTGRES_TESTS=true .venv/bin/pytest -q`: **112 passed**, including 12 PostgreSQL tests. `node --test tests/*.js`: **16 passed**. `node --check app/web/app.js` and `git diff --check` passed. `make test` could not start because this Mac's Xcode license is unaccepted; the underlying commands ran directly. |
+| V3 implementation commit | `f3bc5fc`; Google account-selection follow-up `a1762d1`. The owner reported successful Render deploys. Reconfirm the exact live source SHA in Render before citing it as independent release evidence. |
+| V3 API and frontend test command/result | Earlier disposable-Postgres full suite: `RUN_POSTGRES_TESTS=true .venv/bin/pytest -q`: **112 passed**, including 12 PostgreSQL tests; `node --test tests/*.js`: **16 passed**. On 2026-10-07, `.venv/bin/pytest -q tests/test_hosted.py tests/test_api.py` passed **96 tests**, with **12 PostgreSQL tests skipped** because that disposable instance was not started; `git diff --check` passed. `make test` could not start because this Mac's Xcode license is unaccepted; the underlying commands ran directly. |
 | Container packaging and startup | The production `Dockerfile` built successfully as a local image. The image started with disposable test-mode settings and `/health` returned `status: ok`, `db_backend: sqlite`, and `auth_mode: review_unverified`. The temporary container was stopped. This does not test the hosted Supabase configuration. |
 | Disposable local Postgres and privacy test | Docker Postgres 16: all guarded integration tests passed. A populated V2 schema upgraded to V3 twice without losing sample users, a person, a session, or an invitation. The Supabase privacy SQL enabled RLS and removed `anon`/`authenticated` read privileges on 19 tables in this local rehearsal. The backend still uses a privileged owner role, so **per-circle RLS is not claimed**. The destructive suite never targeted Supabase. |
-| Hosted Render release and smoke check | Not part of the current evidence |
+| Hosted Render release and smoke check | Owner-reported: approved owner/viewer Google sign-in; an unlisted account denied; fictional Rao circle and edit persisted; viewer fields read-only with medical-note privacy notice; Safari and Incognito Chrome sessions both lost access after **Sign out on all devices**; a previously opened private image URL returned `{"detail":"Missing or invalid media access ticket"}` after sign-out. The viewer initially failed because Render's approved-email list had the wrong address; correcting it and deploying restored sign-in. No signed-in direct-API probe or independent review of Render/Supabase settings was performed. |
 | Synthetic screenshots reviewed and saved | Four local review-mode screenshots under `docs/portfolio-assets/security/` show fictional owner/viewer UI, invitation expiry/revocation, and medical-note redaction. They are not hosted security proof and are not published. |
 
 ## 1. Executive summary
 
-Viraasat's most important security boundary is family membership. A Google sign-in establishes an identity; an application allowlist admits a small tester cohort; neither grants access to every circle. V3 now defines named server-side circle actions, rechecks open realtime connections, moves hosted browser sessions into secure cookies with CSRF checks, revokes pre-approval V2 sessions on first V3 login, and bounds invitations, reads, and uploads in shared database state. Synthetic SQLite and disposable PostgreSQL checks pass, including two simultaneous first logins and durable throttling. Real Supabase/Google configuration and hosted behavior remain unverified; V3 is unreleased.
+Viraasat's most important security boundary is family membership. A Google sign-in establishes an identity; an application allowlist admits a small tester cohort; neither grants access to every circle. V3 defines named server-side circle actions, rechecks open realtime connections, moves hosted browser sessions into secure cookies with CSRF checks, revokes pre-approval V2 sessions on first V3 login, and bounds invitations, reads, and uploads in shared database state. Synthetic SQLite and disposable PostgreSQL checks pass, including two simultaneous first logins and durable throttling. The owner has also exercised core hosted login, role, revocation, and private-media flows; those observations are narrower than a full provider/configuration audit.
 
 ## 2. Original trust model
 
@@ -32,14 +32,15 @@ The [threat model](security-threat-model.md) covers cross-family ID substitution
 - Hashed, expiring app sessions and scoped, session-bound media/WebSocket tickets support app-level logout/revocation. A private Supabase Storage bucket is accessed only by the server; hosted uploads accept JPEG/PNG after type/size checks.
 - Request telemetry records generated request IDs, route templates, status/outcome, and timing without request bodies, auth headers, or query strings. Metrics are process-local.
 
-### V3 working-tree controls
+### V3 controls and evidence
 
 | Control | Code location | Regression evidence | Deployed evidence |
 |---|---|---|---|
-| Centralized named-action policy and cross-family matrix | `app/api/authorization.py`; `app/api/main.py`; [route matrix](security-route-matrix.md) | Two-family ID/role and WebSocket revocation tests pass locally; a PostgreSQL hosted-flow test covers sign-in, invitation, viewer redaction, denied edits, and session/ticket revocation | Pending |
-| Approved tester admission and legacy-session transition | `app/api/hosted.py`; `app/api/main.py`; `approved_accounts` table | Denied unlisted Google callback, deapproval, missing-list startup, and first-login V2 revocation tests pass locally | Pending |
-| Hosted `HttpOnly`/`Secure`/`SameSite` session cookie and CSRF guard | `app/api/hosted.py`, `app/api/cookie_auth.py`, `app/web/app.js` | Hosted cookie/CSRF tests pass locally; browser/provider smoke pending | Pending |
-| Account-wide app-session revocation | `app/api/hosted.py`, `scripts/revoke_hosted_sessions.py` | Hosted self/operator tests and ticket invalidation pass locally | Pending |
+| Centralized named-action policy and cross-family matrix | `app/api/authorization.py`; `app/api/main.py`; [route matrix](security-route-matrix.md) | Two-family ID/role and WebSocket revocation tests pass locally; a PostgreSQL hosted-flow test covers sign-in, invitation, viewer redaction, denied edits, and session/ticket revocation. A focused SQLite cookie test sends a viewer PATCH with valid CSRF, receives 403, and confirms no profile change. | Owner saw read-only viewer profile and medical-note privacy notice. No direct hosted API mutation probe. |
+| Approved tester admission and legacy-session transition | `app/api/hosted.py`; `app/api/main.py`; `approved_accounts` table | Denied unlisted Google callback, deapproval, missing-list startup, and first-login V2 revocation tests pass locally. | Owner saw an unlisted account denied; a mismatched Render email denied the viewer until corrected and redeployed. |
+| Hosted `HttpOnly`/`Secure`/`SameSite` session cookie and CSRF guard | `app/api/hosted.py`, `app/api/cookie_auth.py`, `app/web/app.js` | Hosted cookie/CSRF tests pass locally. | Real Google sign-in and sign-out worked; cookie flags and CSRF rejection were not independently inspected in the hosted browser. |
+| Account-wide app-session revocation | `app/api/hosted.py`, `scripts/revoke_hosted_sessions.py` | Hosted self/operator tests and ticket invalidation pass locally. | Owner reported Safari and Incognito Chrome both signed out after account-wide revocation. |
+| Private media ticket revocation | `app/api/main.py`; `app/api/hosted.py` | Ticket/session binding and logout tests pass locally. | A copied image link returned `Missing or invalid media access ticket` after app sign-out. |
 | Invitation expiry, revocation, replay safety | `app/api/security_abuse.py`; `app/api/main.py`; invitation UI | Helper and API lifecycle tests pass locally | Pending |
 | Request-rate and aggregate media quota limits | `app/api/security_abuse.py`; `app/api/main.py` | Helper and API cap/429 tests pass; PostgreSQL rate counter and API flows pass. Concurrent upload quota proof remains pending | Pending |
 | Sanitized 401/403/429 status visibility | Existing `app/api/observability.py`; no new external pipeline | Structured route log tests pass locally; production metrics unavailable | No production aggregation/alerting claimed |
@@ -47,13 +48,13 @@ The [threat model](security-threat-model.md) covers cross-family ID substitution
 
 ### Before / after / risk reduced
 
-The “after” column describes code tested locally, **not deployed behavior**. Provider and release gates remain open.
+The “after” column describes the implementation. The specific hosted behaviors observed by the owner are listed above; do not infer that every control was independently tested in production.
 
 | Area | Confirmed before | V3 after | Risk reduced |
 |---|---|---|---|
 | Authorization | Endpoint-specific membership/role helpers in `app/api/main.py` | Named fail-closed actions; synthetic two-family/WebSocket tests pass | Reduces risk of inconsistent route checks and stale realtime membership locally |
-| Demo admission | Google consent-screen Testing setting only | Server checks verified email against configured tester list at callback and during sessions/tickets | Blocks unlisted Google identities in local tests; hosted proof pending |
-| Sessions | Hashed app tokens, localStorage bearer in hosted UI, per-session logout, fourteen-day expiry | `__Host-ft_session`, `X-FT-CSRF`, legacy bearer rotation, self/operator revoke-all; local tests pass | Reduces JavaScript-readable token exposure and allows account-wide app revocation locally |
+| Demo admission | Google consent-screen Testing setting only | Server checks verified email against configured tester list at callback and during sessions/tickets | Blocks unlisted Google identities in local tests; owner observed hosted rejection before a corrected Render allowlist permitted viewer sign-in |
+| Sessions | Hashed app tokens, localStorage bearer in hosted UI, per-session logout, fourteen-day expiry | `__Host-ft_session`, `X-FT-CSRF`, legacy bearer rotation, self/operator revoke-all; local tests pass | Reduces JavaScript-readable token exposure; owner observed cross-browser app-session revocation |
 | Invitations | Target-account and pending-state checks; no explicit expiry/revocation | Seven-day expiry, owner revocation, idempotent creation, atomic response; API tests pass | Reduces indefinite/replayed invite risk locally |
 | Media/abuse | Private API-proxied objects, per-file type/size limits | Durable rate and circle/uploader caps; API tests pass | Bounds tested request/storage abuse, subject to hosted quota validation |
 | Database | Browser grants revoked; backend uses privileged owner | No per-circle RLS claim without role migration and real Postgres test | Not claimed |
@@ -61,11 +62,11 @@ The “after” column describes code tested locally, **not deployed behavior**.
 
 ## 5. Major decisions and trade-offs
 
-The [decision records](security-decisions.md) explain why the API owns circle authorization, why private media remains proxied instead of switching to short-lived Supabase signed URLs, why account-wide revocation is preferable to relying on provider logout, and why per-circle RLS is a separate role/migration gate. V3 uses hosted HTTP-only cookies with CSRF protection; local tests cover the API and derived media tickets. Database-backed limits cost writes but can survive a Render restart, unlike process-local counters. The PostgreSQL first-login concurrency and restart-migration checks pass; concurrent upload and deployed-worker behavior remain untested.
+The [decision records](security-decisions.md) explain why the API owns circle authorization, why private media remains proxied instead of switching to short-lived Supabase signed URLs, why account-wide revocation is preferable to relying on provider logout, and why per-circle RLS is a separate role/migration gate. V3 uses hosted HTTP-only cookies with CSRF protection; local tests cover the API and derived media tickets, and the owner observed cross-browser revocation and media-ticket denial. Database-backed limits cost writes but can survive a Render restart, unlike process-local counters. The PostgreSQL first-login concurrency and restart-migration checks pass; concurrent upload and deployed-worker behavior remain untested.
 
 ## 6. Tests and evidence
 
-Local synthetic tests cover foreign circle/nested IDs, viewer edits and medical-note redaction, unapproved identity denial, first-login V2 revocation, revoked sessions and tickets, cookie CSRF, over-quota uploads, 429 limits, and invitation replay/wrong-recipient/expiry/revocation. Commands and final counts are in the evidence table above. Disposable PostgreSQL tests additionally exercise database-backed flows, simultaneous first logins, durable throttling, and an additive V2 migration. A non-bypassing runtime role would still be required to claim per-circle RLS. A hosted smoke test should verify `/health`, real sign-in, and a fictional two-account flow before any release assertion.
+Local synthetic tests cover foreign circle/nested IDs, viewer edits and medical-note redaction, unapproved identity denial, first-login V2 revocation, revoked sessions and tickets, cookie CSRF, over-quota uploads, 429 limits, and invitation replay/wrong-recipient/expiry/revocation. Commands and prior full-suite counts are in the evidence table above. On 2026-10-07, five focused tests passed against the current checkout, including a new viewer-cookie PATCH denial test; `git diff --check` passed. Disposable PostgreSQL tests additionally exercised database-backed flows, simultaneous first logins, durable throttling, and an additive V2 migration. A non-bypassing runtime role would still be required to claim per-circle RLS. The hosted checks above are user-reported; `/health` configuration and direct API denial were not independently probed during this final smoke pass.
 
 ## 7. Observability added
 
@@ -77,7 +78,7 @@ The [screenshot plan](security-screenshot-plan.md) specifies role contrast, cros
 
 ## 9. Remaining risks
 
-The V3 browser removes V2's localStorage bearer. A pre-approval V2 session requires Google re-login and is revoked then; an already-approved legacy session can rotate into a cookie. An older deployed V2 page or compromised same-origin script can still use a current approved session until revocation. Same-origin malicious code can make requests through the browser even after cookie migration. Removing a tester email blocks access while absent, but permanent removal also requires app-session revocation. Google provider account revocation is not a continuous app-session check. Authorized recipients can retain and redistribute content. The privileged Postgres runtime role means API mistakes remain the family-isolation risk. Free-tier capacity and process-local telemetry limit abuse detection; there is no verified independent backup/restore drill or complete living-person consent/export/deletion model. Provider-level and hosted deployment claims require separate verification.
+The V3 browser removes V2's localStorage bearer. A pre-approval V2 session requires Google re-login and is revoked then; an already-approved legacy session can rotate into a cookie. An older deployed V2 page or compromised same-origin script can still use a current approved session until revocation. Same-origin malicious code can make requests through the browser even after cookie migration. Removing a tester email blocks access while absent, but permanent removal also requires app-session revocation. Google provider account revocation is not a continuous app-session check. Authorized recipients can retain and redistribute content. The privileged Postgres runtime role means API mistakes remain the family-isolation risk. Free-tier capacity and process-local telemetry limit abuse detection; there is no verified independent backup/restore drill or complete living-person consent/export/deletion model. Hosted observations are not a penetration test or full provider configuration audit.
 
 ## 10. P2 backlog
 
@@ -89,20 +90,20 @@ The V3 browser removes V2's localStorage bearer. A pre-approval V2 session requi
 
 ## Resume / portfolio evidence
 
-**Publication hold:** These candidates describe locally tested V3 work, not a hosted release. Add real provider and deployed evidence before presenting them as shipped results.
+**Publication boundary:** V3 is live for approved testers according to the owner's Render and browser checks. Portfolio copy may describe the exact observed flows above as user-reported acceptance, alongside local test evidence. Do not present the demo as security-certified or imply that untested migration, backup, consent, rate-limit, and RLS claims were proved in production.
 
 Candidate bullets (each under 35 words):
 
 1. Centralized Viraasat's owner/editor/viewer rules into named server-side actions and added synthetic two-family and realtime revocation tests for cross-circle access.
-2. Moved hosted browser sessions to HTTP-only cookies with CSRF checks, rotated legacy bearer tokens, and tested account-wide session and media-ticket revocation locally.
+2. Moved hosted browser sessions to HTTP-only cookies with CSRF checks; local tests and owner-reported two-browser checks cover account-wide revocation and private-media ticket denial.
 3. Added expiring, revocable invitations and database-backed request/storage limits, with API tests for replay, wrong-account acceptance, quota rejection, and throttling.
 
-Portfolio summary (119 words; **draft, do not publish as a V3 release account**):
+Portfolio summary (**draft; review wording and evidence before publication**):
 
-> Viraasat is a shared family archive, so a Google sign-in cannot by itself decide whose stories someone may see. For V3, I mapped the trust boundary from Supabase Auth through FastAPI to Postgres and private image storage, then centralized circle permissions in server-side rules. I added tests with two fictional families to check that changing an ID cannot cross the family boundary and that viewers cannot read medical notes or edit records. Hosted sessions now use HTTP-only cookies with CSRF checks; invitations expire and can be revoked; request and storage limits help protect the free demo. These controls and a V2-to-V3 migration rehearsal pass on disposable local Postgres. I am holding the hosted release until real provider behavior is verified.
+> Viraasat is a shared family archive, so a Google sign-in cannot by itself decide whose stories someone may see. For V3, I mapped the trust boundary from Supabase Auth through FastAPI to Postgres and private image storage, then centralized circle permissions in server-side rules. Local tests with fictional families check that changing an ID cannot cross the family boundary and that viewers cannot read medical notes or edit records. The approved-tester demo is now hosted; in live checks, a viewer could read the shared family but not edit cards or see medical notes. Account-wide sign-out removed access in Safari and Incognito Chrome, and a later sign-out invalidated an already opened image link. I still separate those observed flows from broader claims about backups, consent, and database-level isolation.
 
-Interview talking points (**current analysis, update result with final test evidence**):
+Interview talking points (**distinguish local tests from hosted observations**):
 
-1. **Problem:** A valid Google login could be mistaken for family access. **Decision:** Treat FastAPI membership/role policy as the family boundary. **Trade-off:** Every route must apply it. **Result:** Named-action and two-family tests pass locally; hosted check pending.
-2. **Problem:** Media URLs can outlive access. **Decision:** Keep a private bucket and membership-checked API proxy with session-bound tickets. **Trade-off:** More backend bandwidth. **Result:** Ticket invalidation passes local tests; provider check pending.
+1. **Problem:** A valid Google login could be mistaken for family access. **Decision:** Treat FastAPI membership/role policy as the family boundary. **Trade-off:** Every route must apply it. **Result:** Named-action and two-family tests pass locally; the owner observed viewer read-only and medical-note notice in the hosted app. A direct hosted write probe remains unperformed.
+2. **Problem:** Media URLs can outlive access. **Decision:** Keep a private bucket and membership-checked API proxy with session-bound tickets. **Trade-off:** More backend bandwidth. **Result:** Ticket invalidation passes local tests; the owner observed an opened image link fail after sign-out in the hosted app.
 3. **Problem:** RLS being enabled could be confused with per-family defense in depth. **Decision:** Document the privileged-role limitation and gate role migration on real Postgres tests. **Trade-off:** API remains the principal isolation layer. **Result:** No unsupported RLS claim in the V3 evidence package.

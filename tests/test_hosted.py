@@ -261,6 +261,23 @@ def test_cookie_reads_work_but_writes_require_matching_csrf_header(client):
     assert client.get('/auth/me', headers={'Authorization': 'Bearer unknown'}).status_code == 401
 
 
+def test_viewer_cookie_cannot_edit_person_with_valid_csrf(client):
+    owner = session()
+    viewer = session()
+    viewer_id = client.get('/auth/me', headers=viewer).json()['id']
+    circle = client.post('/circles', headers=owner, json={'name': 'Private'}).json()['id']
+    person = client.post(f'/circles/{circle}/persons', headers=owner,
+                         json={'full_name': 'Sample Person', 'occupation': 'Teacher'}).json()['id']
+    assert client.post(f'/circles/{circle}/members', headers=owner,
+                       json={'user_id': viewer_id, 'role': 'viewer'}).status_code == 200
+
+    csrf = use_session_cookie(client, viewer)
+    denied = client.patch(f'/circles/{circle}/persons/{person}',
+                          headers={'X-FT-CSRF': csrf}, json={'occupation': 'Architect'})
+    assert denied.status_code == 403
+    assert client.get(f'/circles/{circle}/persons').json()[0]['occupation'] == 'Teacher'
+
+
 def test_legacy_browser_migration_rotates_bearer_into_cookie(client):
     legacy = session()
     old_token = legacy['Authorization'].split(' ', 1)[1]
