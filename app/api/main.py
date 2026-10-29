@@ -48,6 +48,8 @@ WEB_ASSET_DIR = BASE_DIR / "app" / "web"
 WEB_ASSET_FILES = {
     "app.css": ("app.css", "text/css"),
     "app.js": ("app.js", "text/javascript"),
+    "workspace.js": ("workspace.js", "text/javascript"),
+    "workspace.css": ("workspace.css", "text/css"),
     "bootstrap.js": ("bootstrap.js", "text/javascript"),
     "graph-utils.js": ("graph-utils.js", "text/javascript"),
     "error-utils.js": ("error-utils.js", "text/javascript"),

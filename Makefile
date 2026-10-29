@@ -14,7 +14,7 @@ run:
 	$(UVICORN) app.api.main:app --reload
 
 test:
-	$(NODE) --test tests/test_graph_utils.js tests/test_privacy_utils.js tests/test_error_utils.js tests/test_person_search_utils.js tests/test_bootstrap_fallback.js
+	$(NODE) --test tests/test_graph_utils.js tests/test_privacy_utils.js tests/test_error_utils.js tests/test_person_search_utils.js tests/test_bootstrap_fallback.js tests/test_workspace_utils.js
 	$(PYTEST) -q
 
 test-postgres:

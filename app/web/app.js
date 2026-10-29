@@ -6,6 +6,7 @@ const missingRuntimeDependencies = [
   ["error utilities", typeof globalThis.FamilyTreeErrorUtils !== "undefined"],
   ["privacy utilities", typeof globalThis.FamilyTreePrivacyUtils !== "undefined"],
   ["person search utilities", typeof globalThis.FamilyTreePersonSearchUtils !== "undefined"],
+  ["workspace interface", typeof globalThis.FamilyTreeWorkspace !== "undefined"],
 ].filter(([, available]) => !available).map(([name]) => name);
 
 if (missingRuntimeDependencies.length === 0) {
@@ -1378,11 +1379,18 @@ function GraphView({
   ]);
 }
 
-function LazyDetails({ className = "card", summary, onFirstOpen, children }) {
+function LazyDetails({ className = "card", summary, onFirstOpen, active, children }) {
   const [contentMounted, setContentMounted] = useState(false);
+  useEffect(() => {
+    if (active && !contentMounted) {
+      setContentMounted(true);
+      if (typeof onFirstOpen === "function") onFirstOpen();
+    }
+  }, [active, contentMounted, onFirstOpen]);
   const renderContent = typeof children === "function" ? children : () => children;
   return React.createElement("details", {
     className,
+    open: active,
     "data-lazy-details": summary,
     "data-content-mounted": contentMounted ? "true" : "false",
     onToggle: (event) => {
@@ -1587,6 +1595,17 @@ function PersonJourney({ people, onClose, onReveal, onCheckDuplicates, onSave, o
 }
 
 function App() {
+  const [workspacePage, setWorkspacePage] = useState(() => globalThis.FamilyTreeWorkspace.pageFromHash(window.location.hash));
+  function navigateWorkspace(page) {
+    const safePage = globalThis.FamilyTreeWorkspace.pageFromHash(`#${page}`);
+    setWorkspacePage(safePage);
+    if (window.location.hash !== `#${safePage}`) window.location.hash = safePage;
+  }
+  useEffect(() => {
+    const onHashChange = () => setWorkspacePage(globalThis.FamilyTreeWorkspace.pageFromHash(window.location.hash));
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
   const [users, setUsers] = useState([]);
   const [activeUserId, setActiveUserId] = useState(localStorage.getItem("activeUserId") || "");
   const [authToken, setAuthToken] = useState(localStorage.getItem("authToken") || "");
@@ -1640,8 +1659,7 @@ function App() {
   const [personPlacesLoading, setPersonPlacesLoading] = useState(false);
   const [personRevisionsLoading, setPersonRevisionsLoading] = useState(false);
   const [discussionLoading, setDiscussionLoading] = useState(false);
-  const [leftOpen, setLeftOpen] = useState(true);
-  const [rightOpen, setRightOpen] = useState(true);
+  // Workspace destinations replace the collapsible sidebars.
   const [timeTimelineOpen, setTimeTimelineOpen] = useState(true);
   const [selectedPersonId, setSelectedPersonId] = useState("");
   const [highlightedNodeIds, setHighlightedNodeIds] = useState([]);
@@ -2143,7 +2161,7 @@ function App() {
 
   function openPersonProfile(personId) {
     applyPersonFocus(personId);
-    setRightOpen(true);
+    navigateWorkspace("people");
   }
 
   function choosePersonSearchResult(person) {
@@ -2157,9 +2175,12 @@ function App() {
   }
 
   function focusPersonFinder() {
+    navigateWorkspace("tree");
     setPersonSearchFocused(true);
-    personSearchInputRef.current?.focus();
-    personSearchInputRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+    requestAnimationFrame(() => {
+      personSearchInputRef.current?.focus();
+      personSearchInputRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
   }
 
   function handlePersonSearchKeyDown(event) {
@@ -2673,7 +2694,6 @@ function App() {
     selectPerson(person.id);
     setHighlightedNodeIds([person.id]);
     setHighlightedEdgeKeys([]);
-    setRightOpen(true);
     const results = await Promise.allSettled([
       loadCircleData(selectedCircle),
       fetchSubgraph({ circleId: selectedCircle, root, direction: "descendants", depth: 2, mode, lateralTypes: "spouse_of,sibling_of,cousin_of", lateralDepth: 1 }),
@@ -2707,6 +2727,7 @@ function App() {
   }
 
   function revealNewPerson(personId) {
+    navigateWorkspace("tree");
     setPersonJourneyOpen(false);
     setNewArrivalId(personId);
     window.requestAnimationFrame(() => {
@@ -3363,36 +3384,8 @@ function App() {
     setPersonSearchActiveIndex(0);
   }, [personSearchQuery, selectedCircle]);
 
-  const gridCols = `${leftOpen ? "320px" : "44px"} 1fr ${rightOpen ? "340px" : "44px"}`;
-
-  return React.createElement(React.Fragment, null, [
-    React.createElement("div", { className: "topbar", key: "top" }, [
-      React.createElement("div", { key: "t" }, [
-        React.createElement("div", { className: "title", key: "ttl" }, "Viraasat"),
-        React.createElement("div", { className: "subtitle", key: "sub" }, "Digital Heirloom for South Asian Lineage"),
-      ]),
-      React.createElement("div", { key: "actions", style: { display: "flex", gap: "8px", alignItems: "center" } }, [
-        React.createElement("div", {
-          className: `auth-mode-chip ${authModeClass}`,
-          key: "auth-mode",
-          title: runtimeConfig?.warning || "Loading deployment security configuration",
-          role: "status",
-        }, authModeLabel),
-        React.createElement("button", { className: "btn", key: "zoom-in", onClick: () => setZoom((z) => Math.min(2.2, z + 0.15)) }, "Zoom +"),
-        React.createElement("button", { className: "btn", key: "zoom-out", onClick: () => setZoom((z) => Math.max(graphRenderStats?.large_graph_mode ? LARGE_GRAPH_MIN_ZOOM : 0.35, z - 0.15)) }, "Zoom -"),
-        React.createElement("button", { className: "btn", key: "fit", onClick: fitGraph }, "Fit"),
-        React.createElement("button", { className: "btn", key: "reset", onClick: () => setZoom(1) }, "1:1"),
-        React.createElement("button", { className: "btn", key: "l", onClick: () => setLeftOpen((v) => !v) }, leftOpen ? "Hide Left" : "Show Left"),
-        React.createElement("button", { className: "btn", key: "r", onClick: () => setRightOpen((v) => !v) }, rightOpen ? "Hide Right" : "Show Right"),
-      ]),
-    ]),
-    React.createElement("div", { className: "shell", style: { gridTemplateColumns: gridCols }, key: "shell" }, [
-      React.createElement("aside", { className: `sidebar ${leftOpen ? "" : "collapsed"}`, key: "left" }, [
-        React.createElement("div", { className: "sidebar-head", key: "h" }, [
-          React.createElement("span", { key: "txt" }, "Archive Stewardship"),
-          React.createElement("button", { className: "btn", key: "b", onClick: () => setLeftOpen((v) => !v) }, leftOpen ? "◀" : "▶"),
-        ]),
-        leftOpen ? React.createElement("div", { className: "sidebar-body", key: "body" }, [
+  // Panels keep their existing API handlers and permissions. The workspace owns navigation.
+  const accountPanels = [
           React.createElement("details", { className: "card", open: true, key: "u" }, [
             React.createElement("summary", { key: "s" }, "Users & Circles"),
             !managedAuthAvailable && React.createElement("form", { key: "f1", onSubmit: (e) => createUser(e).catch((x) => setStatus(x.message)) }, [
@@ -3648,13 +3641,49 @@ function App() {
                 }, relationshipListExpanded ? `Show first ${PANEL_ROW_LIMIT} relationships` : `Show all ${relationships.length} relationships`)
               : null,
           ]),
-        ]) : null
-      ]),
-
-      React.createElement("main", { className: "graph-wrap", key: "center" }, [
+  ];
+  const lineagePanel = !isLargeSubgraph ? React.createElement("section", { className: "lineage-journey", key: "lineage-journey" }, [
+                  React.createElement("div", { className: "lineage-journey-head", key: "h" }, [
+                    React.createElement("div", { className: "lineage-journey-title", key: "t" }, "Lineage Journey"),
+                    React.createElement("div", { className: "muted", key: "m" }, lineageJourneyItems.length ? `${lineageJourneyItems.length} profiles` : "Render a graph to build timeline"),
+                  ]),
+                  React.createElement("div", { className: "lineage-journey-subtitle", key: "sub" }, "Tracing roots from earliest known ancestors through defining world events."),
+                  React.createElement("div", { className: "lineage-journey-rail", key: "trk" },
+                    lineageJourneyItems.length
+                      ? lineageJourneyItems.map((item, idx) =>
+                          React.createElement("div", { className: `journey-row ${idx % 2 ? "flip" : ""}`, key: item.id }, [
+                            React.createElement("div", { className: "journey-person", key: "p" },
+                              React.createElement("button", {
+                                type: "button",
+                                className: "journey-person-card",
+                                onMouseDown: (e) => e.preventDefault(),
+                                onClick: () => applyPersonFocus(item.id),
+                              }, [
+                                React.createElement("div", { className: "journey-person-head", key: "ph" }, [
+                                  React.createElement("div", { className: "lineage-name", key: "n" }, item.name),
+                                  React.createElement("span", { className: "journey-chip", key: "c" }, item.badge),
+                                ]),
+                                React.createElement("div", { className: "lineage-years", key: "y" }, `${item.birthDate || "?"} — ${item.deathDate || "present"}`),
+                                React.createElement("div", { className: "muted", key: "bp" }, item.birthPlace || "Birthplace unknown"),
+                              ])
+                            ),
+                            React.createElement("div", { className: "journey-center", key: "d" }, React.createElement("span", { className: "journey-dot" })),
+                            React.createElement("div", { className: "journey-context", key: "ctx" }, [
+                              React.createElement("div", { className: "journey-context-label", key: "lbl" }, `World Events • ${(item.birthDate || item.deathDate || "").slice(0, 4) || "Era"}`),
+                              ...(item.worldEvents.length
+                                ? item.worldEvents.map((evt, i) => React.createElement("div", { key: `e-${i}` }, `• ${evt}`))
+                                : [React.createElement("div", { className: "muted", key: "none" }, "No mapped world events for this year.")]),
+                            ]),
+                          ])
+                        )
+                      : [React.createElement("div", { className: "muted", key: "empty" }, "Timeline entries appear here after graph render.")]
+                  )
+                ]) : null;
+  const treePanel =
+      React.createElement("div", { className: "graph-wrap", key: "center" }, [
         React.createElement("div", { className: "graph-scroll", key: "scroll", ref: graphViewportRef }, [
           React.createElement("div", { style: { padding: "12px 12px 0 12px" }, key: "controls" }, [
-            React.createElement("div", { className: "status-badge", key: "st", "aria-live": "polite" }, workspaceStatus),
+            !isAuthenticated ? React.createElement("div", { className: "status-badge", key: "st", "aria-live": "polite" }, workspaceStatus) : null,
             !isAuthenticated
               ? React.createElement("section", { className: "auth-gate", key: "auth-gate", role: "region", "aria-label": "Sign in to continue" }, [
                   React.createElement("div", { className: "auth-gate-eyebrow", key: "e" }, "Private family archive"),
@@ -3687,7 +3716,7 @@ function App() {
                           key: "choose",
                           type: "button",
                           className: "ghost",
-                          onClick: () => setLeftOpen(true),
+                          onClick: () => navigateWorkspace("circle"),
                         }, "Choose another user"),
                       ])),
                 ])
@@ -3740,7 +3769,9 @@ function App() {
                       : React.createElement("div", { className: "person-finder-empty", key: "empty", role: "status" }, "No matching people"))
                   : null,
               ]),
-              React.createElement("div", { className: "graph-controls-grid", key: "g" }, [
+              React.createElement("details", { className: "ws-graph-options", key: "g" }, [
+                React.createElement("summary", { key: "summary" }, `Tree view options · ${effectiveGraphRootPersonName}`),
+                React.createElement("div", { className: "graph-controls-grid", key: "fields" }, [
                 React.createElement("div", { className: "graph-root-choice", key: "p" }, [
                   React.createElement("input", {
                     key: "value",
@@ -3780,8 +3811,9 @@ function App() {
                   React.createElement("input", { key: "control", type: "number", name: "lateral_depth", min: 0, max: 4, defaultValue: 1, "aria-label": "Lateral relationship depth" })),
                 React.createElement(GraphControlField, { key: "lt", label: "Side relationships", className: "graph-control-wide" },
                   React.createElement("input", { key: "control", name: "lateral_types", defaultValue: "spouse_of,sibling_of,cousin_of", placeholder: "spouse, sibling, cousin", "aria-label": "Lateral relationship types" })),
-                React.createElement("button", { className: "graph-render-button", key: "b", type: "submit", disabled: !effectiveGraphRootPersonId }, "Render Graph"),
+                ]),
               ]),
+              React.createElement("button", { className: "graph-render-button", key: "b", type: "submit", disabled: !effectiveGraphRootPersonId }, "Render Graph"),
               graphRenderStats
                 ? React.createElement("div", {
                     className: `graph-performance ${graphRenderStats.duration_ms <= graphRenderStats.budget_ms ? "" : "over-budget"}`.trim(),
@@ -3857,43 +3889,7 @@ function App() {
                 ]),
               ])
             : React.createElement(React.Fragment, { key: "journey-default" }, [
-                !isLargeSubgraph ? React.createElement("section", { className: "lineage-journey", key: "lineage-journey" }, [
-                  React.createElement("div", { className: "lineage-journey-head", key: "h" }, [
-                    React.createElement("div", { className: "lineage-journey-title", key: "t" }, "Lineage Journey"),
-                    React.createElement("div", { className: "muted", key: "m" }, lineageJourneyItems.length ? `${lineageJourneyItems.length} profiles` : "Render a graph to build timeline"),
-                  ]),
-                  React.createElement("div", { className: "lineage-journey-subtitle", key: "sub" }, "Tracing roots from earliest known ancestors through defining world events."),
-                  React.createElement("div", { className: "lineage-journey-rail", key: "trk" },
-                    lineageJourneyItems.length
-                      ? lineageJourneyItems.map((item, idx) =>
-                          React.createElement("div", { className: `journey-row ${idx % 2 ? "flip" : ""}`, key: item.id }, [
-                            React.createElement("div", { className: "journey-person", key: "p" },
-                              React.createElement("button", {
-                                type: "button",
-                                className: "journey-person-card",
-                                onMouseDown: (e) => e.preventDefault(),
-                                onClick: () => applyPersonFocus(item.id),
-                              }, [
-                                React.createElement("div", { className: "journey-person-head", key: "ph" }, [
-                                  React.createElement("div", { className: "lineage-name", key: "n" }, item.name),
-                                  React.createElement("span", { className: "journey-chip", key: "c" }, item.badge),
-                                ]),
-                                React.createElement("div", { className: "lineage-years", key: "y" }, `${item.birthDate || "?"} — ${item.deathDate || "present"}`),
-                                React.createElement("div", { className: "muted", key: "bp" }, item.birthPlace || "Birthplace unknown"),
-                              ])
-                            ),
-                            React.createElement("div", { className: "journey-center", key: "d" }, React.createElement("span", { className: "journey-dot" })),
-                            React.createElement("div", { className: "journey-context", key: "ctx" }, [
-                              React.createElement("div", { className: "journey-context-label", key: "lbl" }, `World Events • ${(item.birthDate || item.deathDate || "").slice(0, 4) || "Era"}`),
-                              ...(item.worldEvents.length
-                                ? item.worldEvents.map((evt, i) => React.createElement("div", { key: `e-${i}` }, `• ${evt}`))
-                                : [React.createElement("div", { className: "muted", key: "none" }, "No mapped world events for this year.")]),
-                            ]),
-                          ])
-                        )
-                      : [React.createElement("div", { className: "muted", key: "empty" }, "Timeline entries appear here after graph render.")]
-                  )
-                ]) : null,
+
                 React.createElement(GraphView, {
                   key: "graph",
                   subgraph,
@@ -3912,14 +3908,8 @@ function App() {
                 }),
               ])) : null,
         ])
-      ]),
-
-      React.createElement("aside", { className: `sidebar ${rightOpen ? "" : "collapsed"}`, key: "right" }, [
-        React.createElement("div", { className: "sidebar-head", key: "h" }, [
-          React.createElement("span", { key: "txt" }, "Context & Collaboration"),
-          React.createElement("button", { className: "btn", key: "b", onClick: () => setRightOpen((v) => !v) }, rightOpen ? "▶" : "◀"),
-        ]),
-        rightOpen ? React.createElement("div", { className: "sidebar-body", key: "body" }, [
+      ]);
+  const personAndCirclePanels = [
           React.createElement("details", { className: "card", open: true, key: "profile" }, [
             React.createElement("summary", { key: "s" }, "Selected Person"),
             selectedPerson
@@ -4285,12 +4275,43 @@ function App() {
               ]))
             ),
           ]),
-        ]) : null
-      ]),
-    ]),
-      personJourneyOpen && isAuthenticated && selectedCircle && canEditRecords
-        ? React.createElement(PersonJourney, { key: "person-journey", people: persons, onClose: () => setPersonJourneyOpen(false), onReveal: revealNewPerson, onCheckDuplicates: checkJourneyDuplicates, onSave: savePersonJourney, onRetryLink: finishPersonJourney })
-        : null,
+  ];
+  const getPanel = (items, key) => items.find((item) => item && item.key === key);
+  return React.createElement(React.Fragment, null, [
+    React.createElement(globalThis.FamilyTreeWorkspace.Workspace, {
+      key: isAuthenticated ? `${activeUserId}:${selectedCircle}` : "signed-out",
+      page: workspacePage, onNavigate: navigateWorkspace,
+      isAuthenticated, managedAuthAvailable, activeUserName, activeCircleRole,
+      circles, selectedCircle, onSelectCircle: selectCircle,
+      persons, selectedPerson, selectedPersonId, onSelectPerson: selectPerson,
+      relationships, auditLogs, canEditRecords, status: workspaceStatus,
+      onAddPerson: () => setPersonJourneyOpen(true),
+      onSignOut: () => signOutCurrentUser().catch((error) => setStatus(error.message)),
+      authModeLabel, authModeClass,
+      onZoomIn: () => setZoom((value) => Math.min(2.2, value + 0.15)),
+      onZoomOut: () => setZoom((value) => Math.max(graphRenderStats?.large_graph_mode ? LARGE_GRAPH_MIN_ZOOM : 0.35, value - 0.15)),
+      onFit: fitGraph,
+      panels: {
+        account: getPanel(accountPanels, "u"),
+        membership: getPanel(accountPanels, "m"),
+        invitations: getPanel(accountPanels, "inv"),
+        relationships: getPanel(accountPanels, "p"),
+        tree: treePanel,
+        lineage: lineagePanel,
+        profile: getPanel(personAndCirclePanels, "profile"),
+        revisions: getPanel(personAndCirclePanels, `revisions-${selectedCircle}`),
+        discussion: getPanel(personAndCirclePanels, `discussion-${selectedCircle}`),
+        media: getPanel(personAndCirclePanels, `media-${selectedCircle}`),
+        places: getPanel(personAndCirclePanels, `places-${selectedCircle}`),
+        requests: getPanel(personAndCirclePanels, "cr"),
+        context: getPanel(personAndCirclePanels, "ctx"),
+        timeline: getPanel(personAndCirclePanels, "tl"),
+        audit: getPanel(personAndCirclePanels, "audit"),
+      },
+    }),
+    personJourneyOpen && isAuthenticated && selectedCircle && canEditRecords
+      ? React.createElement(PersonJourney, { key: "person-journey", people: persons, onClose: () => setPersonJourneyOpen(false), onReveal: revealNewPerson, onCheckDuplicates: checkJourneyDuplicates, onSave: savePersonJourney, onRetryLink: finishPersonJourney })
+      : null,
   ]);
 }
 
