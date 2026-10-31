@@ -371,7 +371,7 @@ def test_web_app_exposes_signed_out_recovery_state(tmp_path: Path) -> None:
     assert "LARGE_GRAPH_EDGE_THRESHOLD = 320" in page_source
     assert "GRAPH_FIRST_FRAME_BUDGET_MS = 1200" in page_source
     assert "window.__familyTreeLastGraphRender = detail" in page_source
-    assert "Performance overview" in page_source
+    assert "Rendering details" in page_source
     assert '.attr("class", "graph-node-card")' in page_source
     assert "graphAbortControllerRef.current.abort()" in page_source
     assert "selectedCircleRef.current !== circleId" in page_source
@@ -407,7 +407,7 @@ def test_web_app_exposes_signed_out_recovery_state(tmp_path: Path) -> None:
     assert "choosePersonSearchResult" in page_source
     assert 'className: "graph-root-choice"' in page_source
     assert "function GraphControlField" in page_source
-    assert 'label: "Direction"' in page_source
+    assert 'label: "Show"' in page_source
     assert 'label: "Family scope"' in page_source
     assert 'label: "Side relationships"' in page_source
     assert 'name: "root_person_id"' in page_source

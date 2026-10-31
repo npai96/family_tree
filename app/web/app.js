@@ -695,8 +695,8 @@ function GraphView({
     [contextEvents, hasData, layoutMode, rootPersonId, subgraph]
   );
   const { width, height, pos, nodes, edges, layoutMeta } = layout;
-  const CANVAS_PAD_X = 220;
-  const CANVAS_PAD_Y = 260;
+  const CANVAS_PAD_X = 60;
+  const CANVAS_PAD_Y = 60;
   const names = useMemo(() => {
     const rows = {};
     nodes.forEach((n) => { rows[n.id] = n.full_name; });
@@ -1445,7 +1445,12 @@ function PersonJourney({ people, onClose, onReveal, onCheckDuplicates, onSave, o
   const completionHeadingRef = useRef(null);
   const onCloseRef = useRef(onClose);
   const busyRef = useRef(busy);
-  onCloseRef.current = onClose;
+  const closeSafely = () => {
+    if (busy) return;
+    if (!saved && Object.entries(draft).some(([key, value]) => key !== "relationship_type" && Boolean(value)) && !window.confirm("Discard this unsaved person?")) return;
+    onClose();
+  };
+  onCloseRef.current = closeSafely;
   busyRef.current = busy;
   const update = (field) => (event) => {
     const value = event.target.value;
@@ -1481,7 +1486,7 @@ function PersonJourney({ people, onClose, onReveal, onCheckDuplicates, onSave, o
     else if (step > 0) stepHeadingRef.current?.focus();
   }, [step, saved]);
 
-  async function next() {
+  async function next(skipOptional = false) {
     setError("");
     if (step === 0) {
       if (!draft.full_name.trim()) { setError("Please add their name to continue."); return; }
@@ -1496,7 +1501,7 @@ function PersonJourney({ people, onClose, onReveal, onCheckDuplicates, onSave, o
       } catch (cause) { setError(cause.message); return; }
       finally { setBusy(false); }
     }
-    setStep((current) => Math.min(current + 1, PERSON_JOURNEY_STEPS.length - 1));
+    setStep((current) => skipOptional === true ? 3 : Math.min(current + 1, PERSON_JOURNEY_STEPS.length - 1));
   }
 
   async function save() {
@@ -1561,11 +1566,11 @@ function PersonJourney({ people, onClose, onReveal, onCheckDuplicates, onSave, o
       ]),
     ]),
   ];
-  return h("div", { className: "journey-backdrop", onMouseDown: (event) => { if (event.target === event.currentTarget && !busy) onClose(); } },
+  return h("div", { className: "journey-backdrop", onMouseDown: (event) => { if (event.target === event.currentTarget && !busy) closeSafely(); } },
     h("section", { className: "person-journey", role: "dialog", "aria-modal": "true", "aria-labelledby": "journey-title", ref: dialogRef }, [
       h("div", { className: "journey-head", key: "head" }, [
         h("span", { className: "journey-eyebrow", key: "eyebrow" }, "Viraasat · A new story"),
-        h("button", { className: "journey-close", key: "close", type: "button", onClick: onClose, disabled: busy, "aria-label": saved ? "Close" : "Close without saving" }, "×"),
+        h("button", { className: "journey-close", key: "close", type: "button", onClick: closeSafely, disabled: busy, "aria-label": saved ? "Close" : "Close without saving" }, "×"),
       ]),
       saved ? h("div", { className: "journey-complete", key: "complete" }, [
         h("div", { className: "journey-complete-mark", key: "mark", "aria-hidden": "true" }, "✦"),
@@ -1583,6 +1588,7 @@ function PersonJourney({ people, onClose, onReveal, onCheckDuplicates, onSave, o
           h("h2", { id: "journey-title", key: "title", ref: stepHeadingRef, tabIndex: -1 }, PERSON_JOURNEY_STEPS[step].title),
           h("p", { className: "journey-prompt", key: "prompt" }, PERSON_JOURNEY_STEPS[step].prompt),
           stepContent[step],
+          step < 3 && h("button", { type: "button", className: "journey-secondary", disabled: busy || !draft.full_name.trim(), onClick: () => next(true) }, "Skip optional details"),
         ]),
         error ? h("p", { className: "journey-error", role: "alert", key: "error" }, error) : null,
         h("div", { className: "journey-actions", key: "actions" }, [
@@ -1968,8 +1974,10 @@ function App() {
     setSelectedCircle(nextCircleId);
   }
 
+  const profileSelectionGuardRef = useRef(null);
   function selectPerson(personId) {
     const nextPersonId = personId || "";
+    if (selectedPersonIdRef.current !== nextPersonId && profileSelectionGuardRef.current && !profileSelectionGuardRef.current()) return false;
     if (selectedPersonIdRef.current !== nextPersonId) {
       const selectionKey = selectedCircleRef.current && nextPersonId
         ? `${selectedCircleRef.current}:${nextPersonId}`
@@ -2153,7 +2161,7 @@ function App() {
   }
 
   function applyPersonFocus(personId) {
-    selectPerson(personId);
+    if (selectPerson(personId) === false) return;
     const path = findPathFromRoot(personId);
     setHighlightedNodeIds(path.nodes.length ? path.nodes : [personId]);
     setHighlightedEdgeKeys(path.edges);
@@ -3384,6 +3392,23 @@ function App() {
     setPersonSearchActiveIndex(0);
   }, [personSearchQuery, selectedCircle]);
 
+  const initialTreeRef = useRef("");
+  useEffect(() => {
+    if (!isAuthenticated || !selectedCircle) { initialTreeRef.current = ""; return; }
+    if (!persons.length || circleDataLoading || workspacePage !== "tree" || subgraph) return;
+    const key = `${activeUserId}:${selectedCircle}`;
+    if (initialTreeRef.current === key) return;
+    initialTreeRef.current = key;
+    const childIds = new Set(relationships.filter((r) => r.relationship_type === "parent_of").map((r) => r.to_person_id));
+    const root = (persons.find((p) => !childIds.has(p.id)) || persons[0]).id;
+    setStatus("Loading family tree…");
+    fetchSubgraph({ circleId: selectedCircle, root, direction: "descendants", depth: 2, mode: "lineage", lateralTypes: "spouse_of,sibling_of,cousin_of", lateralDepth: 1 }).then((data) => {
+      if (!data) return;
+      setSubgraph(data); setLastRoot(root); setGraphRootPersonId(root);
+      setStatus(""); setTimeout(fitGraph, 0);
+    }).catch((error) => setStatus(`${error.message} Open Tree view options to retry.`));
+  }, [isAuthenticated, activeUserId, selectedCircle, persons, circleDataLoading, workspacePage, subgraph]);
+
   // Panels keep their existing API handlers and permissions. The workspace owns navigation.
   const accountPanels = [
           React.createElement("details", { className: "card", open: true, key: "u" }, [
@@ -3443,7 +3468,7 @@ function App() {
                 React.createElement("input", { key: "code", id: "account-code", readOnly: true, value: activeUserId, onFocus: (e) => e.target.select() }),
                 React.createElement("button", { key: "copy", type: "button", onClick: copyInvitationCode, "aria-label": "Copy your invitation code" }, inviteCopied ? "Copied" : "Copy"),
               ]),
-              React.createElement("p", { className: "muted", key: "help" }, "Copy and send this code to a circle owner. They send you an invitation; you accept it under Invitations & Ownership. Your changes are saved to your account."),
+              React.createElement("p", { className: "muted", key: "help" }, "Copy and send this code to a circle owner. They send you an invitation; you accept it under Family access. Your changes are saved to your account."),
               React.createElement("span", { className: "sr-only", role: "status", key: "copied" }, inviteCopied ? "Invitation code copied" : ""),
             ]) : null,
           ]),
@@ -3480,9 +3505,9 @@ function App() {
               managedAuthAvailable ? React.createElement("input", { key: "u", name: "invited_user_id", required: true, placeholder: "Recipient invitation code", "aria-label": "Recipient invitation code" }) : React.createElement("select", { key: "u", name: "invited_user_id" },
                 users.map((u) => React.createElement("option", { key: u.id, value: u.id }, `${u.display_name} (${u.id.slice(0, 8)})`))
               ),
-              React.createElement("select", { key: "r", name: "role" }, [
-                React.createElement("option", { key: "e", value: "editor" }, "editor"),
-                React.createElement("option", { key: "v", value: "viewer" }, "viewer"),
+              React.createElement("select", { key: "r", name: "role", defaultValue: "viewer", "aria-label": "Invitation access" }, [
+                React.createElement("option", { key: "e", value: "editor" }, "Editor (includes health notes)"),
+                React.createElement("option", { key: "v", value: "viewer" }, "Viewer"),
               ]),
               React.createElement("button", { key: "b", type: "submit", disabled: !selectedCircle || !canManageMembers }, "Send Invite"),
             ]),
@@ -3522,16 +3547,16 @@ function App() {
           React.createElement(LazyDetails, { className: "card", key: "p", summary: "People & Relationships" }, () => [
             React.createElement("button", { key: "add", type: "button", className: "people-journey-button", onClick: () => setPersonJourneyOpen(true), disabled: !selectedCircle || !canEditRecords }, "Add a family member"),
             React.createElement("form", { key: "f2", onSubmit: (e) => addRelationship(e).catch((x) => setStatus(x.message)) }, [
-              React.createElement("select", { key: "a", name: "from_person_id" }, personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))),
-              React.createElement("select", { key: "b", name: "to_person_id" }, personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))),
+              React.createElement("select", { key: "a", name: "from_person_id", "aria-label": "Person A" }, personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))),
+              React.createElement("select", { key: "b", name: "to_person_id", "aria-label": "Person B" }, personOptions.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label))),
               React.createElement(
                 "select",
                 { key: "c", name: "relationship_type", required: true, defaultValue: "parent_of" },
-                RELATIONSHIP_TYPES.map((t) => React.createElement("option", { key: t.value, value: t.value }, t.label))
+                RELATIONSHIP_TYPES.map((t) => React.createElement("option", { key: t.value, value: t.value }, t.value.replaceAll("_", " ")))
               ),
               React.createElement("button", { key: "d", type: "submit", disabled: personOptions.length < 2 || !canEditRecords }, "Link"),
             ]),
-            React.createElement("div", { className: "muted", key: "rel-help" }, "Direction rule: Person A (first dropdown) -> Person B (second dropdown)."),
+            React.createElement("div", { className: "muted", key: "rel-help" }, "Read the connection as: Person A is [relationship] Person B."),
             React.createElement("div", { className: "muted", key: "perm2" }, canEditRecords ? "Editor permission: records editable" : "Viewer mode: records are read-only"),
             React.createElement("div", { className: "list", key: "l" },
               visiblePeopleRows.map((p) => React.createElement("div", { className: "item", key: p.id },
@@ -3578,7 +3603,7 @@ function App() {
                           key: "er",
                           value: editRelationshipDraft.relationship_type,
                           onChange: (e) => setEditRelationshipDraft((prev) => ({ ...prev, relationship_type: e.target.value })),
-                        }, RELATIONSHIP_TYPES.map((t) => React.createElement("option", { key: t.value, value: t.value }, t.label))),
+                        }, RELATIONSHIP_TYPES.map((t) => React.createElement("option", { key: t.value, value: t.value }, t.value.replaceAll("_", " ")))),
                         React.createElement("div", { key: "ea", style: { display: "flex", gap: "6px" } }, [
                           React.createElement("button", {
                             key: "save",
@@ -3780,7 +3805,7 @@ function App() {
                     value: effectiveGraphRootPersonId,
                     readOnly: true,
                   }),
-                  React.createElement("span", { className: "graph-root-label", key: "label" }, "Graph root"),
+                  React.createElement("span", { className: "graph-root-label", key: "label" }, "Tree starts with"),
                   React.createElement("strong", { key: "name" }, effectiveGraphRootPersonName),
                   React.createElement("button", {
                     className: "graph-root-change",
@@ -3790,12 +3815,12 @@ function App() {
                     onClick: focusPersonFinder,
                   }, "Find another"),
                 ]),
-                React.createElement(GraphControlField, { key: "d", label: "Direction" },
+                React.createElement(GraphControlField, { key: "d", label: "Show" },
                   React.createElement("select", { key: "control", name: "direction", "aria-label": "Traversal direction" }, [
-                    React.createElement("option", { key: "desc", value: "descendants" }, "descendants"),
-                    React.createElement("option", { key: "anc", value: "ancestors" }, "ancestors"),
+                    React.createElement("option", { key: "desc", value: "descendants" }, "Children and grandchildren"),
+                    React.createElement("option", { key: "anc", value: "ancestors" }, "Parents and grandparents"),
                   ])),
-                React.createElement(GraphControlField, { key: "depth", label: "Depth" },
+                React.createElement(GraphControlField, { key: "depth", label: "Generations" },
                   React.createElement("input", { key: "control", type: "number", name: "depth", min: 1, max: 10, defaultValue: 2, "aria-label": "Traversal depth" })),
                 React.createElement(GraphControlField, { key: "m", label: "Family scope" },
                   React.createElement("select", { key: "control", name: "mode", defaultValue: "lineage", "aria-label": "Graph mode" }, [
@@ -3812,17 +3837,17 @@ function App() {
                 React.createElement(GraphControlField, { key: "lt", label: "Side relationships", className: "graph-control-wide" },
                   React.createElement("input", { key: "control", name: "lateral_types", defaultValue: "spouse_of,sibling_of,cousin_of", placeholder: "spouse, sibling, cousin", "aria-label": "Lateral relationship types" })),
                 ]),
+              React.createElement("button", { className: "graph-render-button", key: "b", type: "submit", disabled: !effectiveGraphRootPersonId }, "Apply view"),
               ]),
-              React.createElement("button", { className: "graph-render-button", key: "b", type: "submit", disabled: !effectiveGraphRootPersonId }, "Render Graph"),
               graphRenderStats
-                ? React.createElement("div", {
+                ? React.createElement("details", {
                     className: `graph-performance ${graphRenderStats.duration_ms <= graphRenderStats.budget_ms ? "" : "over-budget"}`.trim(),
                     key: "performance",
                     role: "status",
                     "aria-live": "polite",
                     "data-testid": "graph-performance",
                   }, [
-                    React.createElement("strong", { key: "mode" }, graphRenderStats.large_graph_mode ? "Performance overview" : "Detailed cards"),
+                    React.createElement("summary", { key: "mode" }, "Rendering details"),
                     React.createElement("span", { key: "size" }, `${graphRenderStats.node_count} people · ${graphRenderStats.edge_count} relationships`),
                     React.createElement("span", { key: "frame" }, `First frame ${Math.round(graphRenderStats.duration_ms)} ms · ${graphRenderStats.duration_ms <= graphRenderStats.budget_ms ? "within" : "over"} 1.2 s target`),
                   ])
@@ -3919,7 +3944,7 @@ function App() {
                   !canEditRecords
                     ? React.createElement("div", { className: "profile-readonly-note", key: "readonly", role: "status" }, "Viewer mode · profile details are read-only")
                     : null,
-                  React.createElement("form", { key: `edit-${selectedPerson.id}`, onSubmit: (e) => updatePersonProfile(e).catch((x) => setStatus(x.message)) }, [
+                  React.createElement("form", { key: `edit-${selectedPerson.id}`, onSubmit: updatePersonProfile }, [
                     React.createElement("input", { key: "f1", name: "full_name", "aria-label": "Full name", required: true, defaultValue: selectedPerson.full_name || "", ...profileFieldAccessProps }),
                     React.createElement("input", { key: "f2", name: "religion", "aria-label": "Religion", placeholder: "Religion", defaultValue: selectedPerson.religion || "", ...profileFieldAccessProps }),
                     React.createElement("input", { key: "f3", name: "sex", "aria-label": "Sex", placeholder: "Sex", defaultValue: selectedPerson.sex || "", ...profileFieldAccessProps }),
@@ -4011,7 +4036,7 @@ function App() {
             summary: "Media",
             onFirstOpen: () => setMediaPanelActivated(true),
           }, () => [
-            React.createElement("form", { key: "f", onSubmit: (e) => uploadMedia(e).catch((x) => setStatus(x.message)) }, [
+            canEditRecords && React.createElement("form", { key: "f", onSubmit: (e) => uploadMedia(e).catch((x) => setStatus(x.message)) }, [
               React.createElement(PersonPanelSubject, { key: "p", personId: selectedPersonId, personName: selectedPerson?.full_name, onFind: focusPersonFinder }),
               React.createElement("input", { key: "i", type: "file", name: "file", accept: managedAuthAvailable ? ".jpg,.jpeg,.png" : MEDIA_ACCEPT, disabled: mediaUploadBusy }),
               React.createElement("div", { className: "muted", key: "policy" }, managedAuthAvailable
@@ -4277,6 +4302,30 @@ function App() {
           ]),
   ];
   const getPanel = (items, key) => items.find((item) => item && item.key === key);
+  function focusedPanel(panel, summary, transform) {
+    if (!panel) return null;
+    return React.cloneElement(panel, { summary, children: () => transform(panel.props.children()) });
+  }
+  const membersPanel = focusedPanel(getPanel(accountPanels, "m"), "Members", (items) => [
+    React.createElement("p", { key: "help", className: "muted" }, "Viewers read shared stories and photos. Editors can change records and read health notes. Only owners manage access."),
+    items.find((item) => item?.key === "l"),
+    canManageMembers && React.createElement("details", { key: "roles" }, React.createElement("summary", null, "Change a member’s access"),
+      React.cloneElement(items.find((item) => item?.key === "f"), {}, [
+        React.createElement("label", { key: "person" }, "Existing member", React.createElement("select", { name: "user_id", required: true }, members.filter((m) => m.role !== "owner").map((m) => React.createElement("option", { key: m.user_id, value: m.user_id }, users.find((u) => u.id === m.user_id)?.display_name || `Member ${m.user_id.slice(0, 8)}`)))),
+        React.createElement("label", { key: "role" }, "Access", React.createElement("select", { name: "role", defaultValue: "viewer" }, React.createElement("option", { value: "viewer" }, "Viewer"), React.createElement("option", { value: "editor" }, "Editor (includes health notes)"))),
+        React.createElement("button", { key: "save", type: "submit", disabled: !members.some((m) => m.role !== "owner") }, "Save access"),
+      ])),
+  ]);
+  const invitationsPanel = focusedPanel(getPanel(accountPanels, "inv"), "Invitations", (items) => [
+    ...items.filter((item) => !["f", "invite-help", "xfer"].includes(item?.key)),
+  ]);
+  const ownershipPanel = canManageMembers ? focusedPanel(getPanel(accountPanels, "inv"), "Transfer ownership", (items) => items.filter((item) => item?.key === "xfer")) : null;
+  const relationshipPanel = focusedPanel(getPanel(accountPanels, "p"), "Family connections", (items) => items.filter((item) => !["add", "l", "people-more", "perm2"].includes(item?.key) && (canEditRecords || !["f2", "rel-help"].includes(item?.key))));
+  const placesPanel = focusedPanel(getPanel(personAndCirclePanels, `places-${selectedCircle}`), "Recorded places", (items) => [
+    items.find((item) => item?.key === "l"),
+    canEditRecords && React.createElement("details", { key: "add-place" }, React.createElement("summary", null, "Add a place"), items.find((item) => item?.key === "f")),
+    React.createElement("details", { key: "map-options" }, React.createElement("summary", null, "Map & export options"), items.filter((item) => item && !["l", "f"].includes(item?.key))),
+  ]);
   return React.createElement(React.Fragment, null, [
     React.createElement(globalThis.FamilyTreeWorkspace.Workspace, {
       key: isAuthenticated ? `${activeUserId}:${selectedCircle}` : "signed-out",
@@ -4284,7 +4333,8 @@ function App() {
       isAuthenticated, managedAuthAvailable, activeUserName, activeCircleRole,
       circles, selectedCircle, onSelectCircle: selectCircle,
       persons, selectedPerson, selectedPersonId, onSelectPerson: selectPerson,
-      relationships, auditLogs, canEditRecords, status: workspaceStatus,
+      onRegisterSelectionGuard: (guard) => { profileSelectionGuardRef.current = guard; },
+      relationships, auditLogs, canEditRecords, canManageMembers, status: workspaceStatus,
       onAddPerson: () => setPersonJourneyOpen(true),
       onSignOut: () => signOutCurrentUser().catch((error) => setStatus(error.message)),
       authModeLabel, authModeClass,
@@ -4293,16 +4343,18 @@ function App() {
       onFit: fitGraph,
       panels: {
         account: getPanel(accountPanels, "u"),
-        membership: getPanel(accountPanels, "m"),
-        invitations: getPanel(accountPanels, "inv"),
-        relationships: getPanel(accountPanels, "p"),
+        membership: membersPanel,
+        invitations: invitationsPanel,
+        inviteForm: canManageMembers ? React.createElement("div", null, getPanel(accountPanels, "inv").props.children().filter((item) => ["f", "invite-help"].includes(item?.key))) : null,
+        ownership: ownershipPanel,
+        relationships: relationshipPanel,
         tree: treePanel,
         lineage: lineagePanel,
         profile: getPanel(personAndCirclePanels, "profile"),
         revisions: getPanel(personAndCirclePanels, `revisions-${selectedCircle}`),
         discussion: getPanel(personAndCirclePanels, `discussion-${selectedCircle}`),
         media: getPanel(personAndCirclePanels, `media-${selectedCircle}`),
-        places: getPanel(personAndCirclePanels, `places-${selectedCircle}`),
+        places: placesPanel,
         requests: getPanel(personAndCirclePanels, "cr"),
         context: getPanel(personAndCirclePanels, "ctx"),
         timeline: getPanel(personAndCirclePanels, "tl"),

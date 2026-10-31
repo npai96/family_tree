@@ -146,3 +146,112 @@ body { background:var(--ws-paper); }
 .ws-graph-options summary { cursor:pointer; padding:8px 0; }
 .ws-graph-options[open] .graph-controls-grid { margin-top:12px; }
 .family-workspace .graph-render-button { width:auto; min-width:150px; padding:10px 18px; margin-bottom:15px; }
+
+/* Focused workspace, based on the reviewed October 2026 UX audit. */
+:root { --ws-paper:#f6f4ee; --ws-ink:#263b39; --ws-muted:#64706a; --ws-indigo:#354f48; --ws-rust:#956049; --ws-white:#fffefa; --ws-line:#dedfd6; }
+.family-workspace { grid-template-columns:220px minmax(0,1fr); font-family:Arial,Helvetica,sans-serif; }
+.family-workspace h1,.family-workspace h2,.family-workspace h3 { font-family:Georgia,serif; }
+.family-workspace h1 { font-size:34px; margin:0 0 8px; }
+.family-workspace h2 { font-size:27px; }
+.family-workspace button,.family-workspace input,.family-workspace select,.family-workspace textarea { font:inherit; border-radius:9px; min-height:44px; }
+.family-workspace button { background:var(--ws-indigo); color:white; border:1px solid var(--ws-indigo); box-shadow:none; }
+.family-workspace input,.family-workspace select,.family-workspace textarea { background:var(--ws-white); border:1px solid #bec8c0; color:var(--ws-ink); }
+.family-workspace .ws-button,.family-workspace .ghost { background:var(--ws-white); color:var(--ws-ink); border:1px solid var(--ws-line); }
+.family-workspace .ws-primary { background:var(--ws-indigo); color:white; }
+.family-workspace :focus-visible { outline:3px solid #a16c49; }
+.ws-sidebar { background:#eeeee6; padding:32px 20px 20px; }
+.ws-brand strong { color:var(--ws-ink); font:32px Georgia,serif; }
+.ws-brand small { font-size:12px; margin-top:6px; }
+.ws-circle-picker { padding:0 10px 22px; border-radius:0; background:transparent; }
+.ws-circle-picker select { border:0; border-bottom:1px solid #c8cec3; border-radius:0; font-size:14px; background:transparent; }
+.ws-navigation { margin-top:8px; }
+.family-workspace .ws-nav-item { background:transparent; border:0; color:var(--ws-muted); font-size:14px; }
+.family-workspace .ws-nav-item.is-active { background:#dce5db; color:var(--ws-ink); }
+.ws-sidebar-bottom { padding-top:30px; }
+.ws-account-menu { margin-top:18px; border-top:1px solid var(--ws-line); padding-top:16px; }
+.ws-account-menu>summary { display:flex; align-items:center; gap:10px; cursor:pointer; }
+.ws-account-menu strong,.ws-account-menu small { display:block; overflow-wrap:anywhere; }
+.ws-account-menu small { font-size:12px; color:var(--ws-muted); text-transform:capitalize; }
+.ws-account-menu>button { display:block; width:100%; margin-top:12px; }
+.ws-account-menu p { font-size:12px; }
+.ws-avatar { border-radius:50%; width:44px; height:44px; background:#ebdccc; color:#78563f; font:19px Georgia,serif; }
+.ws-main { padding:36px 42px 60px; max-width:1600px; }
+.ws-page-heading { display:flex; align-items:center; justify-content:space-between; gap:20px; }
+.ws-page-heading p { color:var(--ws-muted); font-size:14px; margin:0; }
+.ws-status { background:transparent; border:0; padding:0; min-height:0; margin:0 0 16px; font-size:13px; }
+.ws-status:empty { display:none; }
+.ws-tree-layout { display:block; position:relative; border:1px solid var(--ws-line); border-radius:15px; background:var(--ws-white); overflow:hidden; }
+.ws-tree-layout .card { border:0; box-shadow:none; background:transparent; }
+.ws-tree-layout .center-top { padding:16px 20px; }
+.ws-tree-layout .graph-scroll { min-height:420px; max-height:65vh; background:radial-gradient(#a5b2a22b 1px,transparent 1px); background-size:22px 22px; }
+.ws-tree-layout .ws-inspector { position:absolute; right:16px; bottom:20px; width:240px; padding:22px; border:1px solid var(--ws-line); border-radius:12px; background:var(--ws-white); box-shadow:0 8px 25px #20382b16; }
+.ws-inspector h2 { font-size:24px; }
+.ws-inspector p { font-size:13px; }
+.ws-tree-tools { display:flex; justify-content:flex-end; gap:8px; align-items:center; margin:10px 0 20px; }
+.ws-tree-tools>span { margin-right:auto; color:var(--ws-muted); font-size:12px; }
+.ws-people-layout { grid-template-columns:220px minmax(0,1fr); gap:28px; }
+.ws-directory { border:0; border-right:1px solid var(--ws-line); border-radius:0; background:transparent; padding:0 22px 0 0; }
+.family-workspace .ws-directory-person { background:transparent; border:0; color:var(--ws-ink); }
+.family-workspace .ws-directory-person.is-active { background:#e8eee6; }
+.ws-person-sheet { border:1px solid var(--ws-line); border-radius:15px; box-shadow:none; background:var(--ws-white); }
+.ws-person-body { padding:30px 34px; }
+.ws-person-heading h2 { font-size:34px; }
+.ws-biography { font:19px/1.8 Georgia,serif; white-space:pre-wrap; }
+.ws-person-tabs { gap:25px; margin:24px 0; }
+.family-workspace .ws-tab { border:0; background:transparent; color:var(--ws-muted); padding:12px 0; border-radius:0; }
+.family-workspace .ws-tab.is-active { color:var(--ws-ink); border-bottom:2px solid var(--ws-indigo); }
+.ws-person-panel>.card,.ws-person-panel>details { border:0; border-top:1px solid var(--ws-line); border-radius:0; box-shadow:none; background:transparent; padding:18px 0; margin:0; }
+.ws-person-panel summary,.ws-access summary { font:14px Arial,sans-serif; }
+.ws-health p { white-space:pre-wrap; }
+.ws-save-feedback,.ws-draft-banner { padding:12px; background:#e8eee6; border-radius:8px; }
+.ws-field { display:block; margin-bottom:14px; font-size:13px; }
+.ws-field>span { display:block; margin-bottom:6px; }
+.ws-person-panel fieldset { border:0; padding:0; margin:0; min-width:0; }
+.ws-places-grid { display:block; max-width:900px; }
+.ws-places-grid>.card { margin-bottom:20px; }
+.ws-access { max-width:900px; }
+.ws-access .card { box-shadow:none; background:var(--ws-white); border:1px solid var(--ws-line); border-radius:12px; }
+.family-workspace details>summary { min-height:44px; display:list-item; cursor:pointer; padding:10px 0; }
+.family-workspace .ws-account-menu>summary { display:flex; }
+.ws-places-grid details details,.ws-access details details { padding:10px 0; }
+.ws-mobile-person { display:none; }
+.ws-signed-out { display:block; }
+.ws-auth { max-width:720px; margin:50px auto; }
+.ws-auth-brand { text-align:center; }
+.ws-auth .card { background:transparent; border:0; box-shadow:none; }
+.graph-performance { font-size:11px; padding:0; background:transparent!important; border:0!important; }
+.graph-performance summary { font-size:12px; }
+@media(max-width:1100px) { .family-workspace { grid-template-columns:190px minmax(0,1fr); } .ws-main { padding:28px 24px 50px; } .ws-people-layout { grid-template-columns:180px minmax(0,1fr); } }
+@media(max-width:700px) {
+ .family-workspace { display:block; }
+ .ws-sidebar { display:grid; position:relative; height:auto; overflow:visible; grid-template-columns:1fr 1fr; gap:12px; padding:18px; }
+ .ws-brand { margin:0; } .ws-brand strong { font-size:27px; } .ws-brand small { display:none; }
+ .ws-circle-picker { padding:0; } .ws-circle-picker>span { display:none; }
+ .ws-navigation { display:none; }
+ .ws-sidebar-bottom { grid-column:1/-1; padding:0; display:flex; align-items:flex-start; gap:14px; }
+ .ws-sidebar-bottom>.ws-nav-item { width:auto; padding:8px 0; font-size:12px; }
+ .ws-account-menu { margin:0 0 0 auto; border:0; padding:0; max-width:65%; }
+ .ws-account-menu .ws-avatar { width:28px; height:28px; font-size:12px; }
+ .ws-account-menu small { display:none; } .ws-account-menu summary { font-size:12px; }
+ .ws-main { padding:24px 17px 110px; } .family-workspace h1 { font-size:29px; }
+ .ws-page-heading { align-items:flex-start; gap:12px; } .ws-page-heading button { font-size:12px; white-space:nowrap; }
+ .ws-mobile-nav { grid-template-columns:repeat(3,1fr); background:var(--ws-white); }
+ .ws-mobile-nav .ws-nav-item { font-size:11px; }
+ .ws-directory { display:none; } .ws-mobile-person { display:block; margin-bottom:20px; }
+ .ws-people-layout { display:block; } .ws-person-body { padding:22px 20px; }
+ .ws-person-heading { flex-wrap:wrap; } .ws-person-heading h2 { font-size:29px; }
+ .ws-tree-layout .ws-inspector { position:static; width:auto; margin:12px; box-shadow:none; }
+ .ws-tree-tools { flex-wrap:wrap; } .ws-tree-tools>span { flex-basis:100%; }
+ .ws-tree-layout .graph-scroll { min-height:350px; }
+ .ws-places-grid { display:block; } .ws-signed-out .ws-main { padding-bottom:30px; }
+}
+:root { --primary:#354f48; --primary-container:#466158; --ink:#263b39; --muted:#64706a; --graph-edge:#a4b5a3; --surface:#f6f4ee; }
+.ws-person-panel>.card>summary { display:list-item; }
+.family-workspace .card>summary { font:15px Arial,Helvetica,sans-serif; }
+.ws-facts>div { background:transparent; padding:0; border-radius:0; }
+.ws-inspector .ws-avatar { width:44px; height:44px; border-radius:50%; font-size:19px; }
+@media(min-width:701px) and (max-width:760px) { .ws-sidebar { display:flex; } .ws-mobile-nav { display:none; } }
+.family-workspace .card summary { font:14px Arial,Helvetica,sans-serif; }
+.family-workspace .card .list { border:0; padding:0; }
+.ws-access .item { padding:14px 0; border-bottom:1px solid var(--ws-line); }
+.ws-access .item:last-child { border-bottom:0; }

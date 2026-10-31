@@ -51,10 +51,10 @@ The example environment file is `.env.hosted.example`. The application does not 
 
 - Confirm an unlisted Google account cannot obtain an app session; add Person A and B to both Google's test users and `APPROVED_TESTER_EMAILS`. Existing V2 testers need to sign in again so V3 records their verified email.
 - Person A signs in with Google and clicks **Explore a sample family**. This creates five fictional people and six relationships in their own circle; clicking again reopens the same circle.
-- Find **Meera Rao**, choose descendants and depth 3, then render. Open a profile, edit an occupation/story, and save it. Try adding a person and a parent relationship.
+- Find **Meera Rao**, open Tree view options, choose children/grandchildren and 3 generations, then Apply view. Open a profile, edit an occupation/story, and save it. Try adding a person and a parent relationship.
 - Refresh; confirm the edit remains. Sign in to the same Google account on another device; confirm the same circle and edit.
 - Upload a small JPEG or PNG image. Redeploy the Render service and verify the media still opens. This specifically checks that storage is remote, not on the disposable Render filesystem.
-- Person B signs in using a different Google account. They should see none of A's circles. B shares **Your invitation code**; A pastes it into **Invitations & Ownership**, chooses viewer, and sends the invitation. B accepts. B can view but cannot edit. Test editor separately if collaboration is in scope.
+- Person B signs in using a different Google account. They should see none of A's circles. B shares **Your invitation code**; A pastes it into **Family access → Invite someone**, chooses viewer, and sends the invitation. B accepts. B can view but cannot edit. Test editor separately if collaboration is in scope.
 - Sign out; a previously issued media ticket should no longer open the private file. Revoke all sessions and confirm a second device loses access. Remove a test address from the app allowlist, restart, and confirm its existing session and ticket fail.
 - Note where testers hesitate: getting started, finding a person, understanding graph direction, editing a profile, and accepting an invitation. Use fictional information during usability sessions.
 
@@ -84,3 +84,7 @@ For a hosted rollback, keep the last verified V2 image/commit available and take
 - Hosted-boundary tests use temporary SQLite plus a mocked provider: PKCE exchange/handoff, rejected callbacks, account isolation, review-session rejection, logout, remote-media behavior, safe secret-key headers, and saved edits across separate sessions for the same identity.
 - In-app browser with a disposable mocked-identity server: sign-in gate, account handoff, private sample creation, graph rendering, profile edit/save, reload, and reopening the saved edit all passed; no browser error logs in that flow.
 - The owner reported live Google/Supabase/Render and cross-device checks above for V2. V3's disposable local PostgreSQL suite passes, including its additive migration and Supabase-style table privacy checks. On 2026-10-07, the owner additionally reported approved viewer sign-in after correcting Render's allowlist, viewer read-only fields, the medical-note privacy notice, cross-browser sign-out on all devices, and a previously opened private image link returning `{"detail":"Missing or invalid media access ticket"}` after sign-out. These are user-reported hosted observations; they do not independently verify all provider settings, rate/storage limits, or a complete Supabase restore.
+
+## Focused workspace UX record
+
+The [UX audit and implementation evidence](ux/README.md) document the task-focused redesign and remaining research questions. The tree now opens automatically; personal invitation codes and sign-out are in the account menu.

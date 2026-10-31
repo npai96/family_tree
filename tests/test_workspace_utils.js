@@ -5,11 +5,13 @@ const assert = require("node:assert/strict");
 const { pageFromHash, filterPeople, initials } = require("../app/web/workspace.js");
 
 test("workspace routes accept only known destinations", () => {
-  for (const name of ["home", "tree", "people", "places", "circle"]) {
+  for (const name of ["tree", "people", "places", "circle"]) {
     assert.equal(pageFromHash(`#${name}`), name);
   }
+  assert.equal(pageFromHash("#home"), "tree");
+  assert.equal(pageFromHash("#access"), "circle");
   for (const value of [undefined, "", "#", "#unknown", "#people/secret", "#__proto__", "#<script>"]) {
-    assert.equal(pageFromHash(value), "home");
+    assert.equal(pageFromHash(value), "tree");
   }
 });
 
