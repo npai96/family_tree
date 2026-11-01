@@ -22,7 +22,7 @@ body { background:var(--ws-paper); }
 .ws-nav-caption { font-size:10px; font-weight:800; color:#93958f; letter-spacing:.14em; margin:30px 10px 12px; }
 .ws-navigation { display:grid; gap:5px; }
 .ws-nav-item { display:flex; align-items:center; gap:12px; width:100%; padding:13px; background:transparent; color:#657078; border:0; border-radius:12px; font-size:13px; font-weight:700; text-align:left; box-shadow:none; }
-.ws-nav-item:hover { background:#e3e3db; }
+.ws-nav-item:hover { background:#e4e6f1; }
 .ws-nav-item.is-active { color:var(--ws-indigo); background:#dfe4e3; }
 .ws-nav-icon { width:22px; text-align:center; font-size:23px; font-weight:400; line-height:1; }
 .ws-sidebar-bottom { margin-top:auto; padding-top:50px; }
@@ -148,25 +148,25 @@ body { background:var(--ws-paper); }
 .family-workspace .graph-render-button { width:auto; min-width:150px; padding:10px 18px; margin-bottom:15px; }
 
 /* Focused workspace, based on the reviewed October 2026 UX audit. */
-:root { --ws-paper:#f6f4ee; --ws-ink:#263b39; --ws-muted:#64706a; --ws-indigo:#354f48; --ws-rust:#956049; --ws-white:#fffefa; --ws-line:#dedfd6; }
+:root { --ws-paper:#f6f4ee; --ws-ink:#28324a; --ws-muted:#687083; --ws-indigo:#303674; --ws-rust:#956049; --ws-white:#fffefa; --ws-line:#dddfe8; }
 .family-workspace { grid-template-columns:220px minmax(0,1fr); font-family:Arial,Helvetica,sans-serif; }
 .family-workspace h1,.family-workspace h2,.family-workspace h3 { font-family:Georgia,serif; }
 .family-workspace h1 { font-size:34px; margin:0 0 8px; }
 .family-workspace h2 { font-size:27px; }
 .family-workspace button,.family-workspace input,.family-workspace select,.family-workspace textarea { font:inherit; border-radius:9px; min-height:44px; }
 .family-workspace button { background:var(--ws-indigo); color:white; border:1px solid var(--ws-indigo); box-shadow:none; }
-.family-workspace input,.family-workspace select,.family-workspace textarea { background:var(--ws-white); border:1px solid #bec8c0; color:var(--ws-ink); }
+.family-workspace input,.family-workspace select,.family-workspace textarea { background:var(--ws-white); border:1px solid #c6cada; color:var(--ws-ink); }
 .family-workspace .ws-button,.family-workspace .ghost { background:var(--ws-white); color:var(--ws-ink); border:1px solid var(--ws-line); }
 .family-workspace .ws-primary { background:var(--ws-indigo); color:white; }
 .family-workspace :focus-visible { outline:3px solid #a16c49; }
-.ws-sidebar { background:#eeeee6; padding:32px 20px 20px; }
+.ws-sidebar { background:#eeedf2; padding:32px 20px 20px; }
 .ws-brand strong { color:var(--ws-ink); font:32px Georgia,serif; }
 .ws-brand small { font-size:12px; margin-top:6px; }
 .ws-circle-picker { padding:0 10px 22px; border-radius:0; background:transparent; }
-.ws-circle-picker select { border:0; border-bottom:1px solid #c8cec3; border-radius:0; font-size:14px; background:transparent; }
+.ws-circle-picker select { border:0; border-bottom:1px solid #cbd0df; border-radius:0; font-size:14px; background:transparent; }
 .ws-navigation { margin-top:8px; }
 .family-workspace .ws-nav-item { background:transparent; border:0; color:var(--ws-muted); font-size:14px; }
-.family-workspace .ws-nav-item.is-active { background:#dce5db; color:var(--ws-ink); }
+.family-workspace .ws-nav-item.is-active { background:#e2e5f3; color:var(--ws-ink); }
 .ws-sidebar-bottom { padding-top:30px; }
 .ws-account-menu { margin-top:18px; border-top:1px solid var(--ws-line); padding-top:16px; }
 .ws-account-menu>summary { display:flex; align-items:center; gap:10px; cursor:pointer; }
@@ -183,8 +183,8 @@ body { background:var(--ws-paper); }
 .ws-tree-layout { display:block; position:relative; border:1px solid var(--ws-line); border-radius:15px; background:var(--ws-white); overflow:hidden; }
 .ws-tree-layout .card { border:0; box-shadow:none; background:transparent; }
 .ws-tree-layout .center-top { padding:16px 20px; }
-.ws-tree-layout .graph-scroll { min-height:420px; max-height:65vh; background:radial-gradient(#a5b2a22b 1px,transparent 1px); background-size:22px 22px; }
-.ws-tree-layout .ws-inspector { position:absolute; right:16px; bottom:20px; width:240px; padding:22px; border:1px solid var(--ws-line); border-radius:12px; background:var(--ws-white); box-shadow:0 8px 25px #20382b16; }
+.ws-tree-layout .graph-scroll { min-height:420px; max-height:65vh; background:radial-gradient(#929bc02b 1px,transparent 1px); background-size:22px 22px; }
+.ws-tree-layout .ws-inspector { position:absolute; right:16px; bottom:20px; width:240px; padding:22px; border:1px solid var(--ws-line); border-radius:12px; background:var(--ws-white); box-shadow:0 8px 25px #28326a16; }
 .ws-inspector h2 { font-size:24px; }
 .ws-inspector p { font-size:13px; }
 .ws-tree-tools { display:flex; justify-content:flex-end; gap:8px; align-items:center; margin:10px 0 20px; }
@@ -192,7 +192,7 @@ body { background:var(--ws-paper); }
 .ws-people-layout { grid-template-columns:220px minmax(0,1fr); gap:28px; }
 .ws-directory { border:0; border-right:1px solid var(--ws-line); border-radius:0; background:transparent; padding:0 22px 0 0; }
 .family-workspace .ws-directory-person { background:transparent; border:0; color:var(--ws-ink); }
-.family-workspace .ws-directory-person.is-active { background:#e8eee6; }
+.family-workspace .ws-directory-person.is-active { background:#eceef8; }
 .ws-person-sheet { border:1px solid var(--ws-line); border-radius:15px; box-shadow:none; background:var(--ws-white); }
 .ws-person-body { padding:30px 34px; }
 .ws-person-heading h2 { font-size:34px; }
@@ -203,7 +203,7 @@ body { background:var(--ws-paper); }
 .ws-person-panel>.card,.ws-person-panel>details { border:0; border-top:1px solid var(--ws-line); border-radius:0; box-shadow:none; background:transparent; padding:18px 0; margin:0; }
 .ws-person-panel summary,.ws-access summary { font:14px Arial,sans-serif; }
 .ws-health p { white-space:pre-wrap; }
-.ws-save-feedback,.ws-draft-banner { padding:12px; background:#e8eee6; border-radius:8px; }
+.ws-save-feedback,.ws-draft-banner { padding:12px; background:#eceef8; border-radius:8px; }
 .ws-field { display:block; margin-bottom:14px; font-size:13px; }
 .ws-field>span { display:block; margin-bottom:6px; }
 .ws-person-panel fieldset { border:0; padding:0; margin:0; min-width:0; }
@@ -245,7 +245,7 @@ body { background:var(--ws-paper); }
  .ws-tree-layout .graph-scroll { min-height:350px; }
  .ws-places-grid { display:block; } .ws-signed-out .ws-main { padding-bottom:30px; }
 }
-:root { --primary:#354f48; --primary-container:#466158; --ink:#263b39; --muted:#64706a; --graph-edge:#a4b5a3; --surface:#f6f4ee; }
+:root { --primary:#303674; --primary-container:#50578d; --ink:#28324a; --muted:#687083; --graph-edge:#98a5c3; --surface:#f6f4ee; }
 .ws-person-panel>.card>summary { display:list-item; }
 .family-workspace .card>summary { font:15px Arial,Helvetica,sans-serif; }
 .ws-facts>div { background:transparent; padding:0; border-radius:0; }
@@ -255,3 +255,73 @@ body { background:var(--ws-paper); }
 .family-workspace .card .list { border:0; padding:0; }
 .ws-access .item { padding:14px 0; border-bottom:1px solid var(--ws-line); }
 .ws-access .item:last-child { border-bottom:0; }
+
+/* Expanded controls share the same layout rules as the resting screens. */
+.family-workspace input:focus,.family-workspace select:focus,.family-workspace textarea:focus {
+  outline:2px solid var(--ws-indigo); outline-offset:2px; box-shadow:none;
+}
+.ws-main:focus { outline:none; }
+.family-workspace form button.person-panel-find,.family-workspace form button.graph-root-change {
+  border:1px solid #c6cada; border-radius:8px; padding:8px 12px; margin:6px 0 0;
+  min-height:40px; background:var(--ws-white); color:var(--ws-ink); font-size:13px;
+}
+.family-workspace .person-panel-subject,.family-workspace .graph-root-choice {
+  background:#f0f1f8; border:1px solid var(--ws-line); border-radius:10px; padding:12px 16px; gap:5px;
+}
+.family-workspace .person-panel-subject>strong,.family-workspace .graph-root-choice strong { font-size:16px; }
+.family-workspace .graph-control-field { gap:8px; font-size:13px; font-weight:normal; }
+.family-workspace .graph-control-field>span { padding:0; line-height:1.4; }
+.ws-place-person { display:grid; gap:10px; max-width:480px; font-size:14px; margin-bottom:24px; }
+.ws-place-person select { margin:0; }
+.family-workspace .card>summary { font:600 21px/1.4 Georgia,serif; color:var(--ws-ink); }
+.family-workspace .card details>summary { font:600 15px/1.5 Arial,sans-serif; color:var(--ws-ink); }
+.ws-places-grid { max-width:none; display:grid; grid-template-columns:minmax(0,1.35fr) minmax(280px,.85fr); gap:24px; align-items:start; }
+.ws-places-grid>.card { margin:0; border:1px solid var(--ws-line); border-radius:14px; padding:24px; box-shadow:none; background:var(--ws-white); }
+.ws-places-grid details details { border-top:1px solid var(--ws-line); margin-top:16px; padding:12px 0 0; }
+.ws-places-grid .migration-panel { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; padding:16px 0; border:0; background:transparent; }
+.ws-places-grid .migration-panel>.person-panel-subject,.ws-places-grid .migration-panel>.graph-control-field:last-of-type { grid-column:1/-1; }
+.ws-places-grid .migration-panel input { margin:0; }
+.ws-tree-layout { display:block; }
+.ws-tree-layout .ws-tree-controls { padding:20px 24px; background:var(--ws-white); border-bottom:1px solid var(--ws-line); }
+.ws-tree-controls form { margin:0; }
+.ws-tree-controls .person-finder { width:100%; max-width:560px; margin-bottom:12px; }
+.ws-tree-controls .person-finder>label { display:block; margin-bottom:10px; }
+.ws-tree-controls .ws-graph-options { border-top:1px solid var(--ws-line); margin-top:16px; }
+.family-workspace .ws-tree-controls .graph-controls-grid { grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; padding:12px 0; }
+.ws-tree-controls .graph-root-choice { grid-column:1/-1; grid-template-columns:1fr auto; }
+.ws-tree-controls .graph-root-label { grid-column:1; }
+.ws-tree-controls .graph-root-choice strong { grid-column:1; }
+.ws-tree-controls .graph-root-change { grid-column:2; grid-row:1/3; align-self:center; }
+.ws-tree-controls .graph-control-wide { grid-column:span 2; }
+.ws-tree-controls .graph-render-button { width:auto; padding:10px 24px; margin-top:4px; }
+.ws-tree-layout .graph-scroll { height:60vh; min-height:400px; max-height:700px; padding:20px; }
+.ws-tree-layout .d3-graph-canvas { display:block; margin:0 auto; }
+.ws-tree-layout .ws-inspector { position:static; width:auto; display:flex; align-items:center; gap:16px; margin:0; padding:16px 24px; border:0; border-top:1px solid var(--ws-line); border-radius:0; box-shadow:none; }
+.ws-tree-layout .ws-inspector .ws-avatar { margin:0; flex-shrink:0; }
+.ws-tree-layout .ws-inspector h2,.ws-tree-layout .ws-inspector p { margin:0; }
+.ws-tree-layout .ws-inspector .ws-button { width:auto; margin:0 0 0 auto; }
+@media(max-width:1100px) { .ws-places-grid { grid-template-columns:1fr; } }
+@media(max-width:700px) {
+ .ws-tree-layout .ws-tree-controls { padding:16px; }
+ .family-workspace .ws-tree-controls .graph-controls-grid { grid-template-columns:1fr; }
+ .ws-tree-controls .graph-control-wide { grid-column:1; }
+ .ws-tree-layout .graph-scroll { padding:12px; min-height:350px; }
+ .ws-tree-layout .ws-inspector { padding:16px; flex-wrap:wrap; }
+ .ws-tree-layout .ws-inspector h2 { font-size:22px; }
+ .ws-tree-layout .ws-inspector .ws-button { margin:0; }
+ .ws-places-grid>.card { padding:18px; }
+ .ws-places-grid .migration-panel { grid-template-columns:1fr; }
+}
+.ws-tree-layout .d3-graph-canvas { min-width:0; }
+/* Keep expanded place editing full-width instead of leaving an empty side rail. */
+.ws-places-grid { grid-template-columns:minmax(0,1fr); }
+.ws-places-grid .migration-panel>.person-panel-subject { grid-template-columns:1fr auto; align-items:center; }
+.ws-places-grid .person-panel-subject>span,.ws-places-grid .person-panel-subject>strong { grid-column:1; }
+.ws-places-grid .person-panel-subject>.person-panel-find { grid-column:2; grid-row:1/3; margin:0; }
+.ws-tree-controls .graph-control-wide { grid-column:auto; }
+.family-workspace .ws-graph-options>summary { font:600 15px/1.5 Arial,sans-serif; color:var(--ws-ink); }
+
+/* Restore the original indigo identity within the focused workspace. */
+.family-workspace h1,.family-workspace h2,.family-workspace h3,.family-workspace .card>summary { color:var(--ws-indigo); }
+.family-workspace .ws-primary { background:linear-gradient(120deg,#363562,#303674); border-color:#303674; }
+.family-workspace .ws-nav-item.is-active { color:var(--ws-indigo); }

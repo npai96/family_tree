@@ -691,7 +691,19 @@ function GraphView({
   onNodeClickRef.current = onNodeClick;
   onRenderCompleteRef.current = onRenderComplete;
   const layout = useMemo(
-    () => computeGraphLayout(hasData ? subgraph : { persons: [], relationships: [] }, rootPersonId, layoutMode, contextEvents),
+    () => {
+      const computed = computeGraphLayout(hasData ? subgraph : { persons: [], relationships: [] }, rootPersonId, layoutMode, contextEvents);
+      if (!hasData || layoutMode === "time_aligned") return computed;
+      // Fit the actual cards, not the legacy minimum 1280px canvas.
+      const points = Object.values(computed.pos);
+      if (!points.length) return computed;
+      const minX = Math.min(...points.map((p) => p.x));
+      const minY = Math.min(...points.map((p) => p.y));
+      const maxX = Math.max(...points.map((p) => p.x));
+      const maxY = Math.max(...points.map((p) => p.y));
+      return { ...computed, width: maxX - minX + 312, height: maxY - minY + 152,
+        pos: Object.fromEntries(Object.entries(computed.pos).map(([id, p]) => [id, { ...p, x: p.x - minX + 156, y: p.y - minY }])) };
+    },
     [contextEvents, hasData, layoutMode, rootPersonId, subgraph]
   );
   const { width, height, pos, nodes, edges, layoutMeta } = layout;
@@ -3706,8 +3718,7 @@ function App() {
                 ]) : null;
   const treePanel =
       React.createElement("div", { className: "graph-wrap", key: "center" }, [
-        React.createElement("div", { className: "graph-scroll", key: "scroll", ref: graphViewportRef }, [
-          React.createElement("div", { style: { padding: "12px 12px 0 12px" }, key: "controls" }, [
+        React.createElement("div", { className: "ws-tree-controls", key: "controls" }, [
             !isAuthenticated ? React.createElement("div", { className: "status-badge", key: "st", "aria-live": "polite" }, workspaceStatus) : null,
             !isAuthenticated
               ? React.createElement("section", { className: "auth-gate", key: "auth-gate", role: "region", "aria-label": "Sign in to continue" }, [
@@ -3854,6 +3865,7 @@ function App() {
                 : null,
             ])
           ]),
+          React.createElement("div", { className: "graph-scroll", key: "scroll", ref: graphViewportRef }, [
           isAuthenticated ? (lastLayoutMode === "time_aligned"
             ? React.createElement("section", { className: `time-aligned-shell ${timeTimelineOpen ? "" : "timeline-collapsed"}`.trim(), key: "time-shell" }, [
                 timeTimelineOpen
@@ -4083,13 +4095,13 @@ function App() {
           }, () => [
             React.createElement("form", { className: "migration-panel", key: "f", onSubmit: (e) => addPersonPlace(e).catch((x) => setStatus(x.message)) }, [
               React.createElement(PersonPanelSubject, { key: "p", personId: selectedPersonId, personName: selectedPerson?.full_name, onFind: focusPersonFinder }),
-              React.createElement("input", { key: "name", name: "place_name", required: true, placeholder: "Place name" }),
-              React.createElement("input", { key: "country", name: "country", placeholder: "Country" }),
-              React.createElement("input", { key: "lat", name: "lat", type: "number", step: "any", placeholder: "Latitude" }),
-              React.createElement("input", { key: "lng", name: "lng", type: "number", step: "any", placeholder: "Longitude" }),
-              React.createElement("input", { key: "from", name: "from_date", type: "date" }),
-              React.createElement("input", { key: "to", name: "to_date", type: "date" }),
-              React.createElement("input", { key: "notes", name: "notes", placeholder: "Notes" }),
+              React.createElement(GraphControlField, { key: "name", label: "Place name" }, React.createElement("input", { key: "name", name: "place_name", required: true, placeholder: "Place name" })),
+              React.createElement(GraphControlField, { key: "country", label: "Country" }, React.createElement("input", { key: "country", name: "country", placeholder: "Country" })),
+              React.createElement(GraphControlField, { key: "lat", label: "Latitude (optional)" }, React.createElement("input", { key: "lat", name: "lat", type: "number", step: "any", placeholder: "Latitude" })),
+              React.createElement(GraphControlField, { key: "lng", label: "Longitude (optional)" }, React.createElement("input", { key: "lng", name: "lng", type: "number", step: "any", placeholder: "Longitude" })),
+              React.createElement(GraphControlField, { key: "from", label: "From date" }, React.createElement("input", { key: "from", name: "from_date", type: "date" })),
+              React.createElement(GraphControlField, { key: "to", label: "To date" }, React.createElement("input", { key: "to", name: "to_date", type: "date" })),
+              React.createElement(GraphControlField, { key: "notes", label: "Notes" }, React.createElement("input", { key: "notes", name: "notes", placeholder: "Notes" })),
               React.createElement("button", { key: "b", type: "submit", disabled: !selectedPersonId || !canEditRecords }, "Add Place"),
               React.createElement("button", { key: "b2", className: "ghost", type: "button", disabled: !selectedPersonId, onClick: () => loadMigrationGeojson(selectedPersonId).catch((x) => setStatus(x.message)) }, "Load Migration GeoJSON"),
             ]),

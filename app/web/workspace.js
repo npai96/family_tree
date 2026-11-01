@@ -146,7 +146,7 @@
     }
     function places() {
       return !selectedCircle ? empty("Choose a family circle", "Places and family milestones will appear here.") : h(React.Fragment, null,
-        h("label", { className: "ws-place-person" }, "Showing records for", h("select", { value: selectedPersonId || "", onChange: (event) => choosePerson(event.target.value) }, h("option", { value: "" }, "Choose a person"), persons.map((person) => h("option", { key: person.id, value: person.id }, person.full_name)))),
+        h("label", { className: "ws-place-person" }, h("span", null, "Showing records for"), h("select", { value: selectedPersonId || "", onChange: (event) => choosePerson(event.target.value) }, h("option", { value: "" }, "Choose a person"), persons.map((person) => h("option", { key: person.id, value: person.id }, person.full_name)))),
         h("div", { className: "ws-places-grid" }, livePanel(panels.places, page === "places"), livePanel(panels.timeline)),
         h("details", { className: "card" }, h("summary", null, "Historical context"), livePanel(panels.context), panels.lineage)
       );
